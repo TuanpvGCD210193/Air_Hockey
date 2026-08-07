@@ -8,9 +8,29 @@ public class Air_Hockey : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput" });
+		PublicDependencyModuleNames.AddRange(new string[] { 
+			"Core", 
+			"CoreUObject", 
+			"Engine", 
+			"InputCore", 
+			"EnhancedInput",
+			"NetCore",
+			"UMG",
+			"Slate",
+			"SlateCore"
+		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
+
+		PublicIncludePaths.AddRange(new string[] {
+			"Air_Hockey",
+			"Air_Hockey/Public",
+			"Air_Hockey/Public/Core",
+			"Air_Hockey/Public/Player",
+			"Air_Hockey/Public/Paddle",
+			"Air_Hockey/Public/Puck",
+			"Air_Hockey/Public/Types"
+		});
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
