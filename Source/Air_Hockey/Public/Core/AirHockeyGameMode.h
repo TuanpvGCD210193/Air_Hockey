@@ -17,6 +17,24 @@ public:
 	void OnGoalScored(int32 ScoringPlayerId);
 
 protected:
+	UPROPERTY(EditDefaultsOnly, Category = "AirHockey|Classes")
+	TSubclassOf<class AAirHockeyPaddle> PaddleClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "AirHockey|Classes")
+	TSubclassOf<class AAirHockeyPuck> PuckClass;
+
 	UPROPERTY(EditDefaultsOnly, Category = "AirHockey|Rules")
 	int32 MaxScoreToWin = 10;
+
+	UPROPERTY(EditDefaultsOnly, Category = "AirHockey|Spawning")
+	FVector Player1SpawnLocation = FVector(-400.0f, 0.0f, 0.0f);
+
+	UPROPERTY(EditDefaultsOnly, Category = "AirHockey|Spawning")
+	FVector Player2SpawnLocation = FVector(400.0f, 0.0f, 0.0f);
+
+	UPROPERTY(Transient)
+	class AAirHockeyPuck* ActivePuck;
+
+	UPROPERTY(Transient)
+	int32 ConnectedPlayersCount = 0;
 };

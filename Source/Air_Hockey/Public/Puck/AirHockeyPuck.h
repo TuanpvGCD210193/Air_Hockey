@@ -17,6 +17,8 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	void LaunchPuck(const FVector& InitialVelocity);
+	void ResetPuck(const FVector& NewLocation, const FVector& InitialVel);
+	FVector GetPuckVelocity() const { return CurrentVelocity; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -29,6 +31,18 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Physics")
 	float PuckRadius = 25.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Bounds")
+	float TableLength = 2000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Bounds")
+	float TableWidth = 1000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Bounds")
+	float GoalWidth = 300.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Bounds")
+	float TableZHeight = 0.0f;
 
 	UPROPERTY(ReplicatedUsing = OnRep_PuckState)
 	FPuckState ServerPuckState;

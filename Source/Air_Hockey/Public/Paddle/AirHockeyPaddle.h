@@ -20,6 +20,10 @@ public:
 	// Perform custom sweep move logic
 	void PerformSweepMove(const FVector& TargetLocation, float DeltaTime, FVector& OutPosition, FVector& OutVelocity);
 
+	FVector GetPaddleVelocity() const { return CurrentVelocity; }
+	int32 GetPlayerIndex() const { return PlayerIndex; }
+	void SetPlayerIndex(int32 InIndex) { PlayerIndex = InIndex; }
+
 	// Client-Side Prediction & Server Reconciliation RPCs
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_SendMove(FPaddleMove Move);
@@ -44,6 +48,18 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Collision")
 	float PaddleRadius = 40.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Bounds")
+	float TableLength = 2000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Bounds")
+	float TableWidth = 1000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Bounds")
+	float TableZHeight = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Player")
+	int32 PlayerIndex = 1;
 
 	UPROPERTY(ReplicatedUsing = OnRep_ServerState)
 	FPaddleState ServerState;

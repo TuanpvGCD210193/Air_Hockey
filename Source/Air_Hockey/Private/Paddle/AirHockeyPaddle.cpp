@@ -38,17 +38,50 @@ void AAirHockeyPaddle::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 
 void AAirHockeyPaddle::PerformSweepMove(const FVector& TargetLocation, float DeltaTime, FVector& OutPosition, FVector& OutVelocity)
 {
+	FVector ClampedTarget = TargetLocation;
+	ClampedTarget.Z = TableZHeight;
+
+	// Step 1.1: Clamp Target Position within Player's side of the table
+	float HalfLength = TableLength / 2.0f;
+	float HalfWidth = TableWidth / 2.0f;
+
+	if (PlayerIndex == 1)
+	{
+		// Player 1 restricted to Left Side (X <= 0)
+		ClampedTarget.X = FMath::Clamp(ClampedTarget.X, -HalfLength + PaddleRadius, 0.0f - PaddleRadius);
+	}
+	else
+	{
+		// Player 2 restricted to Right Side (X >= 0)
+		ClampedTarget.X = FMath::Clamp(ClampedTarget.X, 0.0f + PaddleRadius, HalfLength - PaddleRadius);
+	}
+	ClampedTarget.Y = FMath::Clamp(ClampedTarget.Y, -HalfWidth + PaddleRadius, HalfWidth - PaddleRadius);
+
 	FVector CurrentPos = GetActorLocation();
-	FVector DesiredDelta = TargetLocation - CurrentPos;
+	CurrentPos.Z = TableZHeight;
+
+	FVector DesiredDelta = ClampedTarget - CurrentPos;
 	DesiredDelta.Z = 0.0f; // Keep on table plane
 
 	FVector TargetVel = DesiredDelta / FMath::Max(DeltaTime, 0.0001f);
 	TargetVel = TargetVel.GetClampedToMaxSize(MaxSpeed);
 
-	// Smoothing (exponential interpolation to eliminate mouse jitter)
+	// Step 1.2: Exponential velocity smoothing (eliminates mouse jitter)
 	CurrentVelocity = FMath::VInterpTo(CurrentVelocity, TargetVel, DeltaTime, SmoothingSpeed);
 
 	FVector NewPos = CurrentPos + CurrentVelocity * DeltaTime;
+
+	// Clamp NewPos again to guarantee bounds
+	if (PlayerIndex == 1)
+	{
+		NewPos.X = FMath::Clamp(NewPos.X, -HalfLength + PaddleRadius, 0.0f - PaddleRadius);
+	}
+	else
+	{
+		NewPos.X = FMath::Clamp(NewPos.X, 0.0f + PaddleRadius, HalfLength - PaddleRadius);
+	}
+	NewPos.Y = FMath::Clamp(NewPos.Y, -HalfWidth + PaddleRadius, HalfWidth - PaddleRadius);
+	NewPos.Z = TableZHeight;
 
 	// Perform SweepTrace against table boundary walls
 	FHitResult HitResult;
@@ -68,6 +101,7 @@ void AAirHockeyPaddle::PerformSweepMove(const FVector& TargetLocation, float Del
 	if (bHit)
 	{
 		NewPos = HitResult.Location;
+		NewPos.Z = TableZHeight;
 		CurrentVelocity = FVector::ZeroVector;
 	}
 
@@ -79,7 +113,6 @@ void AAirHockeyPaddle::Server_SendMove_Implementation(FPaddleMove Move)
 {
 	FVector NewPosition, NewVelocity;
 	PerformSweepMove(Move.TargetInputPosition, 1.0f / 60.0f, NewPosition, NewVelocity);
-
 	SetActorLocation(NewPosition);
 
 	ServerState.Position = NewPosition;
