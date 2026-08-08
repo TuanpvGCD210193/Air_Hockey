@@ -3,6 +3,7 @@
 #include "AirHockeyGameMode.h"
 #include "Components/StaticMeshComponent.h"
 #include "Net/UnrealNetwork.h"
+#include "UObject/ConstructorHelpers.h"
 
 AAirHockeyPuck::AAirHockeyPuck()
 {
@@ -15,6 +16,13 @@ AAirHockeyPuck::AAirHockeyPuck()
 	PuckMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PuckMesh"));
 	PuckMesh->SetupAttachment(RootSceneComponent);
 	PuckMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision); // We handle custom physics tracing!
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> DefaultMesh(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	if (DefaultMesh.Succeeded())
+	{
+		PuckMesh->SetStaticMesh(DefaultMesh.Object);
+		PuckMesh->SetRelativeScale3D(FVector(0.5f, 0.5f, 0.1f));
+	}
 }
 
 void AAirHockeyPuck::BeginPlay()
@@ -33,6 +41,16 @@ void AAirHockeyPuck::Tick(float DeltaTime)
 		ServerPuckState.Position = GetActorLocation();
 		ServerPuckState.Velocity = CurrentVelocity;
 		ServerPuckState.TimeStamp = GetWorld()->GetTimeSeconds();
+	}
+	else
+	{
+		// Step 3.4: Smooth Puck Entity Interpolation on Client side
+		FVector CurrentPos = GetActorLocation();
+		FVector TargetPos = ServerPuckState.Position + ServerPuckState.Velocity * DeltaTime;
+
+		FVector InterpolatedPos = FMath::VInterpTo(CurrentPos, TargetPos, DeltaTime, 15.0f);
+		SetActorLocation(InterpolatedPos);
+		CurrentVelocity = ServerPuckState.Velocity;
 	}
 }
 

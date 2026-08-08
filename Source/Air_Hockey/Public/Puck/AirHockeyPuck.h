@@ -42,7 +42,7 @@ protected:
 	float GoalWidth = 300.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Bounds")
-	float TableZHeight = 0.0f;
+	float TableZHeight = 35.0f;
 
 	UPROPERTY(ReplicatedUsing = OnRep_PuckState)
 	FPuckState ServerPuckState;

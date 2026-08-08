@@ -56,9 +56,9 @@ protected:
 	float TableWidth = 1000.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Bounds")
-	float TableZHeight = 0.0f;
+	float TableZHeight = 35.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Player")
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Player")
 	int32 PlayerIndex = 1;
 
 	UPROPERTY(ReplicatedUsing = OnRep_ServerState)

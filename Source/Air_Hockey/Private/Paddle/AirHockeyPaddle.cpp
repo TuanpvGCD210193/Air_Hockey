@@ -1,6 +1,9 @@
 #include "AirHockeyPaddle.h"
+#include "AirHockeyPlayerController.h"
+#include "AirHockeyGameState.h"
 #include "Components/StaticMeshComponent.h"
 #include "Net/UnrealNetwork.h"
+#include "UObject/ConstructorHelpers.h"
 
 AAirHockeyPaddle::AAirHockeyPaddle()
 {
@@ -13,16 +16,91 @@ AAirHockeyPaddle::AAirHockeyPaddle()
 	PaddleMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PaddleMesh"));
 	PaddleMesh->SetupAttachment(RootSceneComponent);
 	PaddleMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision); // We handle collision manually via SweepTrace!
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> DefaultMesh(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	if (DefaultMesh.Succeeded())
+	{
+		PaddleMesh->SetStaticMesh(DefaultMesh.Object);
+		PaddleMesh->SetRelativeScale3D(FVector(1.2f, 1.2f, 0.4f)); // Thicker and larger disc
+	}
 }
 
 void AAirHockeyPaddle::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Create dynamic material to color Player 1 Red and Player 2 Blue so they pop out on white table
+	if (PaddleMesh)
+	{
+		UMaterialInterface* BaseMat = PaddleMesh->GetMaterial(0);
+		if (BaseMat)
+		{
+			UMaterialInstanceDynamic* DynMat = PaddleMesh->CreateDynamicMaterialInstance(0, BaseMat);
+			if (DynMat)
+			{
+				FLinearColor Color = (PlayerIndex == 1) ? FLinearColor::Red : FLinearColor::Blue;
+				DynMat->SetVectorParameterValue(TEXT("Color"), Color);
+				DynMat->SetVectorParameterValue(TEXT("BaseColor"), Color);
+			}
+		}
+	}
 }
 
 void AAirHockeyPaddle::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// Step 3.1: Perform Client-Side Prediction for locally controlled Paddle
+	if (IsLocallyControlled())
+	{
+		APlayerController* PC = Cast<APlayerController>(GetController());
+		if (PC)
+		{
+			FVector TargetInput = FVector::ZeroVector;
+			FVector WorldLocation, WorldDirection;
+
+			if (PC->DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
+			{
+				if (!FMath::IsNearlyZero(WorldDirection.Z))
+				{
+					float T = (TableZHeight - WorldLocation.Z) / WorldDirection.Z;
+					TargetInput = WorldLocation + WorldDirection * T;
+				}
+			}
+
+			// 1. Predict position locally immediately
+			FVector NewPos, NewVel;
+			PerformSweepMove(TargetInput, DeltaTime, NewPos, NewVel);
+			SetActorLocation(NewPos);
+
+			// 2. Package move with incrementing sequence number and store in UnacknowledgedMoves buffer
+			CurrentSequenceNumber++;
+			FPaddleMove Move;
+			Move.TimeStamp = GetWorld()->GetTimeSeconds();
+			Move.TargetInputPosition = TargetInput;
+			Move.CalculatedVelocity = NewVel;
+			Move.SequenceNumber = CurrentSequenceNumber;
+
+			UnacknowledgedMoves.Add(Move);
+
+			// 3. Send RPC to Server for validation
+			Server_SendMove(Move);
+
+			if (GEngine)
+			{
+				FString DebugMsg = FString::Printf(TEXT("[PADDLE TICK] P%d Pos: %s | MouseTarget: %s"), 
+					PlayerIndex, *NewPos.ToCompactString(), *TargetInput.ToCompactString());
+				GEngine->AddOnScreenDebugMessage(100 + PlayerIndex, 0.0f, FColor::Green, DebugMsg);
+			}
+		}
+		else
+		{
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(100, 0.0f, FColor::Red, TEXT("[WARNING] Paddle Has NO Controller!"));
+			}
+		}
+	}
 }
 
 void AAirHockeyPaddle::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -34,10 +112,19 @@ void AAirHockeyPaddle::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AAirHockeyPaddle, ServerState);
+	DOREPLIFETIME(AAirHockeyPaddle, PlayerIndex);
 }
 
 void AAirHockeyPaddle::PerformSweepMove(const FVector& TargetLocation, float DeltaTime, FVector& OutPosition, FVector& OutVelocity)
 {
+	// Freeze Paddle movement if Game Over has been reached
+	AAirHockeyGameState* GS = GetWorld() ? GetWorld()->GetGameState<AAirHockeyGameState>() : nullptr;
+	if (GS && GS->bIsGameOver)
+	{
+		OutPosition = GetActorLocation();
+		OutVelocity = FVector::ZeroVector;
+		return;
+	}
 	FVector ClampedTarget = TargetLocation;
 	ClampedTarget.Z = TableZHeight;
 
@@ -98,7 +185,8 @@ void AAirHockeyPaddle::PerformSweepMove(const FVector& TargetLocation, float Del
 		QueryParams
 	);
 
-	if (bHit)
+	// Only process wall hits (ignore horizontal floor surface hits where ImpactNormal.Z is high)
+	if (bHit && FMath::Abs(HitResult.ImpactNormal.Z) < 0.5f)
 	{
 		NewPos = HitResult.Location;
 		NewPos.Z = TableZHeight;

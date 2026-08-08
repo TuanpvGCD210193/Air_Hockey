@@ -12,8 +12,10 @@ class AIR_HOCKEY_API AAirHockeyGameMode : public AGameModeBase
 public:
 	AAirHockeyGameMode();
 
+	virtual void BeginPlay() override;
 	virtual void PostLogin(APlayerController* NewPlayer) override;
 	
+	void SpawnPaddleForPlayer(APlayerController* NewPlayer);
 	void OnGoalScored(int32 ScoringPlayerId);
 
 protected:
@@ -26,11 +28,11 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "AirHockey|Rules")
 	int32 MaxScoreToWin = 10;
 
-	UPROPERTY(EditDefaultsOnly, Category = "AirHockey|Spawning")
-	FVector Player1SpawnLocation = FVector(-400.0f, 0.0f, 0.0f);
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Spawning")
+	FVector Player1SpawnLocation = FVector(-400.0f, 0.0f, 35.0f);
 
-	UPROPERTY(EditDefaultsOnly, Category = "AirHockey|Spawning")
-	FVector Player2SpawnLocation = FVector(400.0f, 0.0f, 0.0f);
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Spawning")
+	FVector Player2SpawnLocation = FVector(400.0f, 0.0f, 35.0f);
 
 	UPROPERTY(Transient)
 	class AAirHockeyPuck* ActivePuck;

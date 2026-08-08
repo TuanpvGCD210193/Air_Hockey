@@ -14,9 +14,25 @@ public:
 
 	virtual void PlayerTick(float DeltaTime) override;
 	virtual void SetupInputComponent() override;
+	virtual void ClientRestart_Implementation(APawn* NewPawn) override;
 
 	FVector GetMouseWorldPositionOnTablePlane() const;
 
+	void SetupTopDownCamera();
+
+protected:
+	virtual void BeginPlay() override;
+	virtual void OnPossess(APawn* InPawn) override;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Input")
-	float TableZHeight = 0.0f;
+	float TableZHeight = 35.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Camera")
+	FVector CameraLocation = FVector(0.0f, 0.0f, 1900.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Camera")
+	FRotator CameraRotation = FRotator(-90.0f, 0.0f, 0.0f);
+
+	UPROPERTY(Transient)
+	class ACameraActor* TopDownCameraActor;
 };
