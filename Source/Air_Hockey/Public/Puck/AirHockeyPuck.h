@@ -20,17 +20,20 @@ public:
 	void ResetPuck(const FVector& NewLocation, const FVector& InitialVel);
 	FVector GetPuckVelocity() const { return CurrentVelocity; }
 
+	void HandleWallBounce(const FVector& SurfaceNormal);
+	void HandlePaddleHit(AActor* PaddleActor, const FVector& PaddleVelocity);
+
 protected:
 	virtual void BeginPlay() override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "AirHockey|Components")
-	class USceneComponent* RootSceneComponent;
+	class USphereComponent* CollisionSphere;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "AirHockey|Components")
 	class UStaticMeshComponent* PuckMesh;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Physics")
-	float PuckRadius = 25.0f;
+	float PuckRadius = 40.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Bounds")
 	float TableLength = 2000.0f;
@@ -54,6 +57,4 @@ private:
 	FVector CurrentVelocity = FVector::ZeroVector;
 
 	void UpdatePuckPhysics(float DeltaTime);
-	void HandleWallBounce(const FVector& SurfaceNormal);
-	void HandlePaddleHit(AActor* PaddleActor, const FVector& PaddleVelocity);
 };

@@ -27,10 +27,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Input")
 	float TableZHeight = 35.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Camera")
+		UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Camera")
 	FVector CameraLocation = FVector(0.0f, 0.0f, 1900.0f);
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Camera")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Camera") 
 	FRotator CameraRotation = FRotator(-90.0f, 0.0f, 0.0f);
 
 	UPROPERTY(Transient)

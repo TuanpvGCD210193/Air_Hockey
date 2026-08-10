@@ -2,12 +2,14 @@
 #include "AirHockeyGameState.h"
 #include "AirHockeyPaddle.h"
 #include "AirHockeyPuck.h"
+#include "UI/AirHockeyHUD.h"
 #include "Kismet/GameplayStatics.h"
 
 AAirHockeyGameMode::AAirHockeyGameMode()
 {
 	DefaultPawnClass = nullptr; // Prevent UE from spawning default pawns with unneeded camera components
 	GameStateClass = AAirHockeyGameState::StaticClass();
+	HUDClass = AAirHockeyHUD::StaticClass();
 	PaddleClass = AAirHockeyPaddle::StaticClass();
 	PuckClass = AAirHockeyPuck::StaticClass();
 }
@@ -16,10 +18,7 @@ void AAirHockeyGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 10.0f, FColor::Green, TEXT("--> AirHockeyGameMode Active & BeginPlay Running!"));
-	}
+	UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY GAMEMODE] GameMode Active & BeginPlay Running!"));
 
 	// Spawn Puck at table center if it doesn't exist yet
 	if (!ActivePuck && PuckClass)
@@ -28,9 +27,9 @@ void AAirHockeyGameMode::BeginPlay()
 		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		ActivePuck = GetWorld()->SpawnActor<AAirHockeyPuck>(PuckClass, FVector(0.0f, 0.0f, 35.0f), FRotator::ZeroRotator, SpawnParams);
 
-		if (ActivePuck && GEngine)
+		if (ActivePuck)
 		{
-			GEngine->AddOnScreenDebugMessage(-1, 10.0f, FColor::Cyan, TEXT("--> ActivePuck Successfully Spawned at (0,0,15)!"));
+			UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY GAMEMODE] ActivePuck Successfully Spawned at (0, 0, 35)!"));
 		}
 	}
 
@@ -72,11 +71,7 @@ void AAirHockeyGameMode::SpawnPaddleForPlayer(APlayerController* NewPlayer)
 			NewPaddle->SetPlayerIndex(PlayerIdx);
 			NewPlayer->Possess(NewPaddle);
 
-			if (GEngine)
-			{
-				FString Msg = FString::Printf(TEXT("--> Player %d Paddle Spawned at %s and Possessed!"), PlayerIdx, *SpawnLoc.ToString());
-				GEngine->AddOnScreenDebugMessage(-1, 10.0f, FColor::Yellow, Msg);
-			}
+			UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY GAMEMODE] Player %d Paddle Spawned at %s and Possessed!"), PlayerIdx, *SpawnLoc.ToString());
 		}
 	}
 }
@@ -88,24 +83,30 @@ void AAirHockeyGameMode::OnGoalScored(int32 ScoringPlayerId)
 	{
 		GS->AddScore(ScoringPlayerId, 1);
 
+		UE_LOG(LogTemp, Warning, TEXT("[STEP 4.1 DEBUG] GOAL SCORED BY PLAYER %d! Score: Player 1 [%d] - [%d] Player 2"), 
+			ScoringPlayerId, GS->Player1Score, GS->Player2Score);
+
 		if (GS->bIsGameOver)
 		{
-			// Game Over reached! Stop Puck at center
+			// STEP 4.2: Game Over reached! Stop Puck at center and declare Champion
 			if (ActivePuck)
 			{
-				ActivePuck->ResetPuck(FVector::ZeroVector, FVector::ZeroVector);
+				ActivePuck->ResetPuck(FVector(0.0f, 0.0f, 35.0f), FVector::ZeroVector);
 			}
+
+			UE_LOG(LogTemp, Warning, TEXT("[STEP 4.2 DEBUG] MATCH OVER! PLAYER %d IS THE CHAMPION! Final Score: Player 1 [%d] - [%d] Player 2"), 
+				GS->WinningPlayerId, GS->Player1Score, GS->Player2Score);
 			return;
 		}
 
-		// Step 2.2: Reset Puck to center and launch service towards player who was scored on
+		// STEP 4.1: Reset Puck to table center (0, 0, 35) and launch service towards victim (player who was scored ON)
 		if (ActivePuck)
 		{
-			float LaunchX = (ScoringPlayerId == 1) ? 600.0f : -600.0f;
-			float LaunchY = FMath::RandRange(-200.0f, 200.0f);
+			float LaunchX = (ScoringPlayerId == 1) ? 500.0f : -500.0f;
+			float LaunchY = FMath::RandRange(-150.0f, 150.0f);
 			FVector LaunchVel = FVector(LaunchX, LaunchY, 0.0f);
 
-			ActivePuck->ResetPuck(FVector::ZeroVector, LaunchVel);
+			ActivePuck->ResetPuck(FVector(0.0f, 0.0f, 35.0f), LaunchVel);
 		}
 	}
 }

@@ -17,12 +17,13 @@ public:
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
-	// Perform custom sweep move logic
-	void PerformSweepMove(const FVector& TargetLocation, float DeltaTime, FVector& OutPosition, FVector& OutVelocity);
-
 	FVector GetPaddleVelocity() const { return CurrentVelocity; }
 	int32 GetPlayerIndex() const { return PlayerIndex; }
 	void SetPlayerIndex(int32 InIndex) { PlayerIndex = InIndex; }
+
+	// STEP 2.1: Fast Unreliable RPC for smooth position sync to Server
+	UFUNCTION(Server, Unreliable, WithValidation)
+	void Server_SendPaddlePosition(FVector ClampedPosition, FVector CalculatedVelocity);
 
 	// Client-Side Prediction & Server Reconciliation RPCs
 	UFUNCTION(Server, Reliable, WithValidation)
@@ -35,19 +36,19 @@ protected:
 	virtual void BeginPlay() override;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "AirHockey|Components")
-	class USceneComponent* RootSceneComponent;
+	class USphereComponent* CollisionSphere;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "AirHockey|Components")
 	class UStaticMeshComponent* PaddleMesh;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Movement")
-	float MaxSpeed = 1500.0f;
+	float MaxSpeed = 1800.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Movement")
-	float SmoothingSpeed = 25.0f;
+	float SmoothingSpeed = 30.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Collision")
-	float PaddleRadius = 40.0f;
+	float PaddleRadius = 60.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Bounds")
 	float TableLength = 2000.0f;
@@ -67,8 +68,11 @@ protected:
 	UFUNCTION()
 	void OnRep_ServerState();
 
+	void PerformMove(const FVector& TargetLocation, float DeltaTime, FVector& OutPosition, FVector& OutVelocity);
+
 private:
 	TArray<FPaddleMove> UnacknowledgedMoves;
 	uint32 CurrentSequenceNumber = 0;
 	FVector CurrentVelocity = FVector::ZeroVector;
+	FVector LastValidTargetInput = FVector::ZeroVector;
 };

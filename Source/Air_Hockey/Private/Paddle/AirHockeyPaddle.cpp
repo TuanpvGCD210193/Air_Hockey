@@ -1,27 +1,56 @@
 #include "AirHockeyPaddle.h"
 #include "AirHockeyPlayerController.h"
 #include "AirHockeyGameState.h"
+#include "AirHockeyPuck.h"
+#include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Kismet/GameplayStatics.h"
+
+static UStaticMesh* GetEngineCylinderMesh()
+{
+	static UStaticMesh* LoadedMesh = nullptr;
+	if (LoadedMesh) return LoadedMesh;
+
+	const TCHAR* Paths[] = {
+		TEXT("/Engine/BasicShapes/Cylinder.Cylinder"),
+		TEXT("/Engine/EngineMeshes/Cylinder.Cylinder"),
+		TEXT("/Engine/EditorMeshes/EditorShapes/Shape_Cylinder.Shape_Cylinder"),
+		TEXT("/Engine/BasicShapes/Cylinder")
+	};
+
+	for (const TCHAR* Path : Paths)
+	{
+		LoadedMesh = LoadObject<UStaticMesh>(nullptr, Path);
+		if (LoadedMesh)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY] Loaded Engine Cylinder Mesh from: %s"), Path);
+			return LoadedMesh;
+		}
+	}
+	return nullptr;
+}
 
 AAirHockeyPaddle::AAirHockeyPaddle()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 
-	RootSceneComponent = CreateDefaultSubobject<USceneComponent>(TEXT("RootComponent"));
-	SetRootComponent(RootSceneComponent);
+	CollisionSphere = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionSphere"));
+	CollisionSphere->InitSphereRadius(PaddleRadius);
+	CollisionSphere->SetCollisionProfileName(TEXT("Pawn"));
+	SetRootComponent(CollisionSphere);
 
 	PaddleMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PaddleMesh"));
-	PaddleMesh->SetupAttachment(RootSceneComponent);
-	PaddleMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision); // We handle collision manually via SweepTrace!
+	PaddleMesh->SetupAttachment(CollisionSphere);
+	PaddleMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> DefaultMesh(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	if (DefaultMesh.Succeeded())
+	UStaticMesh* MeshObj = GetEngineCylinderMesh();
+	if (MeshObj)
 	{
-		PaddleMesh->SetStaticMesh(DefaultMesh.Object);
-		PaddleMesh->SetRelativeScale3D(FVector(1.2f, 1.2f, 0.4f)); // Thicker and larger disc
+		PaddleMesh->SetStaticMesh(MeshObj);
+		PaddleMesh->SetRelativeScale3D(FVector(1.2f, 1.2f, 0.4f));
 	}
 }
 
@@ -29,9 +58,18 @@ void AAirHockeyPaddle::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Create dynamic material to color Player 1 Red and Player 2 Blue so they pop out on white table
 	if (PaddleMesh)
 	{
+		if (!PaddleMesh->GetStaticMesh())
+		{
+			UStaticMesh* MeshObj = GetEngineCylinderMesh();
+			if (MeshObj)
+			{
+				PaddleMesh->SetStaticMesh(MeshObj);
+				PaddleMesh->SetRelativeScale3D(FVector(1.2f, 1.2f, 0.4f));
+			}
+		}
+
 		UMaterialInterface* BaseMat = PaddleMesh->GetMaterial(0);
 		if (BaseMat)
 		{
@@ -50,55 +88,84 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// Step 3.1: Perform Client-Side Prediction for locally controlled Paddle
+	// STEP 1.2: Dynamic Bounds Clamped Mouse Movement (Pure Local Responsiveness)
 	if (IsLocallyControlled())
 	{
 		APlayerController* PC = Cast<APlayerController>(GetController());
 		if (PC)
 		{
-			FVector TargetInput = FVector::ZeroVector;
-			FVector WorldLocation, WorldDirection;
-
-			if (PC->DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
+			if (LastValidTargetInput.IsZero())
 			{
-				if (!FMath::IsNearlyZero(WorldDirection.Z))
+				LastValidTargetInput = GetActorLocation();
+			}
+
+			FVector TargetInput = LastValidTargetInput;
+			FHitResult CursorHit;
+			bool bFoundTarget = false;
+
+			// Line Trace under cursor to project mouse position onto table surface
+			if (PC->GetHitResultUnderCursorByChannel(TraceTypeQuery1, true, CursorHit))
+			{
+				LastValidTargetInput = CursorHit.Location;
+				LastValidTargetInput.Z = TableZHeight;
+				TargetInput = LastValidTargetInput;
+				bFoundTarget = true;
+			}
+			else
+			{
+				FVector WorldLocation, WorldDirection;
+				if (PC->DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
 				{
-					float T = (TableZHeight - WorldLocation.Z) / WorldDirection.Z;
-					TargetInput = WorldLocation + WorldDirection * T;
+					if (!FMath::IsNearlyZero(WorldDirection.Z))
+					{
+						float T = (TableZHeight - WorldLocation.Z) / WorldDirection.Z;
+						LastValidTargetInput = WorldLocation + WorldDirection * T;
+						TargetInput = LastValidTargetInput;
+						bFoundTarget = true;
+					}
 				}
 			}
 
-			// 1. Predict position locally immediately
+			// Calculate Clamped Position according to Dynamic Half-Table Formula
 			FVector NewPos, NewVel;
-			PerformSweepMove(TargetInput, DeltaTime, NewPos, NewVel);
-			SetActorLocation(NewPos);
+			PerformMove(TargetInput, DeltaTime, NewPos, NewVel);
 
-			// 2. Package move with incrementing sequence number and store in UnacknowledgedMoves buffer
-			CurrentSequenceNumber++;
-			FPaddleMove Move;
-			Move.TimeStamp = GetWorld()->GetTimeSeconds();
-			Move.TargetInputPosition = TargetInput;
-			Move.CalculatedVelocity = NewVel;
-			Move.SequenceNumber = CurrentSequenceNumber;
+			// Fast smooth glide to target (Speed = 45.0f) to avoid teleports on mouse re-entry
+			FVector FastSmoothPos = FMath::VInterpTo(GetActorLocation(), NewPos, DeltaTime, 45.0f);
+			SetActorLocation(FastSmoothPos);
+			CurrentVelocity = NewVel;
 
-			UnacknowledgedMoves.Add(Move);
+			// STEP 2.1: Send position to Server via Fast Unreliable RPC
+			Server_SendPaddlePosition(FastSmoothPos, NewVel);
 
-			// 3. Send RPC to Server for validation
-			Server_SendMove(Move);
-
-			if (GEngine)
+			// STEP 3.1: Trigger Puck hit when Paddle speed > 10 cm/s & Distance2D <= 100 cm
+			if (NewVel.SizeSquared() > 100.0f)
 			{
-				FString DebugMsg = FString::Printf(TEXT("[PADDLE TICK] P%d Pos: %s | MouseTarget: %s"), 
-					PlayerIndex, *NewPos.ToCompactString(), *TargetInput.ToCompactString());
-				GEngine->AddOnScreenDebugMessage(100 + PlayerIndex, 0.0f, FColor::Green, DebugMsg);
+				TArray<AActor*> FoundPucks;
+				UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPuck::StaticClass(), FoundPucks);
+				for (AActor* PuckActor : FoundPucks)
+				{
+					AAirHockeyPuck* Puck = Cast<AAirHockeyPuck>(PuckActor);
+					if (Puck)
+					{
+						float Dist2D = FVector::Dist2D(FastSmoothPos, Puck->GetActorLocation());
+						if (Dist2D <= (PaddleRadius + 40.0f)) // 60 + 40 = 100cm
+						{
+							Puck->HandlePaddleHit(this, NewVel);
+						}
+					}
+				}
 			}
 		}
-		else
+	}
+	else
+	{
+		// STEP 2.2: Remote Client Interpolation (Smooth Opponent Movement)
+		if (!ServerState.Position.IsZero())
 		{
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(100, 0.0f, FColor::Red, TEXT("[WARNING] Paddle Has NO Controller!"));
-			}
+			FVector InterpPos = FMath::VInterpTo(GetActorLocation(), ServerState.Position, DeltaTime, 30.0f);
+			SetActorLocation(InterpPos);
+			CurrentVelocity = ServerState.Velocity;
 		}
 	}
 }
@@ -115,9 +182,8 @@ void AAirHockeyPaddle::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(AAirHockeyPaddle, PlayerIndex);
 }
 
-void AAirHockeyPaddle::PerformSweepMove(const FVector& TargetLocation, float DeltaTime, FVector& OutPosition, FVector& OutVelocity)
+void AAirHockeyPaddle::PerformMove(const FVector& TargetLocation, float DeltaTime, FVector& OutPosition, FVector& OutVelocity)
 {
-	// Freeze Paddle movement if Game Over has been reached
 	AAirHockeyGameState* GS = GetWorld() ? GetWorld()->GetGameState<AAirHockeyGameState>() : nullptr;
 	if (GS && GS->bIsGameOver)
 	{
@@ -125,21 +191,22 @@ void AAirHockeyPaddle::PerformSweepMove(const FVector& TargetLocation, float Del
 		OutVelocity = FVector::ZeroVector;
 		return;
 	}
+
 	FVector ClampedTarget = TargetLocation;
 	ClampedTarget.Z = TableZHeight;
 
-	// Step 1.1: Clamp Target Position within Player's side of the table
 	float HalfLength = TableLength / 2.0f;
 	float HalfWidth = TableWidth / 2.0f;
 
+	// STEP 1.2: Dynamic Half-Table Boundaries Formula
 	if (PlayerIndex == 1)
 	{
-		// Player 1 restricted to Left Side (X <= 0)
+		// Player 1: Left Wall (-HalfLength + Radius) to Centerline (0 - Radius)
 		ClampedTarget.X = FMath::Clamp(ClampedTarget.X, -HalfLength + PaddleRadius, 0.0f - PaddleRadius);
 	}
 	else
 	{
-		// Player 2 restricted to Right Side (X >= 0)
+		// Player 2: Centerline (0 + Radius) to Right Wall (HalfLength - Radius)
 		ClampedTarget.X = FMath::Clamp(ClampedTarget.X, 0.0f + PaddleRadius, HalfLength - PaddleRadius);
 	}
 	ClampedTarget.Y = FMath::Clamp(ClampedTarget.Y, -HalfWidth + PaddleRadius, HalfWidth - PaddleRadius);
@@ -147,61 +214,53 @@ void AAirHockeyPaddle::PerformSweepMove(const FVector& TargetLocation, float Del
 	FVector CurrentPos = GetActorLocation();
 	CurrentPos.Z = TableZHeight;
 
-	FVector DesiredDelta = ClampedTarget - CurrentPos;
-	DesiredDelta.Z = 0.0f; // Keep on table plane
+	FVector InstantVel = (ClampedTarget - CurrentPos) / FMath::Max(DeltaTime, 0.0001f);
+	InstantVel = InstantVel.GetClampedToMaxSize(MaxSpeed);
 
-	FVector TargetVel = DesiredDelta / FMath::Max(DeltaTime, 0.0001f);
-	TargetVel = TargetVel.GetClampedToMaxSize(MaxSpeed);
+	OutPosition = ClampedTarget;
+	OutVelocity = InstantVel;
+}
 
-	// Step 1.2: Exponential velocity smoothing (eliminates mouse jitter)
-	CurrentVelocity = FMath::VInterpTo(CurrentVelocity, TargetVel, DeltaTime, SmoothingSpeed);
+void AAirHockeyPaddle::Server_SendPaddlePosition_Implementation(FVector ClampedPosition, FVector CalculatedVelocity)
+{
+	FVector ValidatedPos, ValidatedVel;
+	PerformMove(ClampedPosition, 1.0f / 60.0f, ValidatedPos, ValidatedVel);
 
-	FVector NewPos = CurrentPos + CurrentVelocity * DeltaTime;
+	SetActorLocation(ValidatedPos);
 
-	// Clamp NewPos again to guarantee bounds
-	if (PlayerIndex == 1)
+	ServerState.Position = ValidatedPos;
+	ServerState.Velocity = CalculatedVelocity;
+
+	// STEP 3.2: Server-Authoritative Puck Hit Physics Launch
+	if (CalculatedVelocity.SizeSquared() > 100.0f)
 	{
-		NewPos.X = FMath::Clamp(NewPos.X, -HalfLength + PaddleRadius, 0.0f - PaddleRadius);
+		TArray<AActor*> FoundPucks;
+		UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPuck::StaticClass(), FoundPucks);
+		for (AActor* PuckActor : FoundPucks)
+		{
+			AAirHockeyPuck* Puck = Cast<AAirHockeyPuck>(PuckActor);
+			if (Puck)
+			{
+				float Dist2D = FVector::Dist2D(ValidatedPos, Puck->GetActorLocation());
+				if (Dist2D <= (PaddleRadius + 40.0f)) // 60 + 40 = 100cm
+				{
+					Puck->HandlePaddleHit(this, CalculatedVelocity);
+				}
+			}
+		}
 	}
-	else
-	{
-		NewPos.X = FMath::Clamp(NewPos.X, 0.0f + PaddleRadius, HalfLength - PaddleRadius);
-	}
-	NewPos.Y = FMath::Clamp(NewPos.Y, -HalfWidth + PaddleRadius, HalfWidth - PaddleRadius);
-	NewPos.Z = TableZHeight;
+}
 
-	// Perform SweepTrace against table boundary walls
-	FHitResult HitResult;
-	FCollisionQueryParams QueryParams;
-	QueryParams.AddIgnoredActor(this);
-
-	bool bHit = GetWorld()->SweepSingleByChannel(
-		HitResult,
-		CurrentPos,
-		NewPos,
-		FQuat::Identity,
-		ECC_WorldStatic,
-		FCollisionShape::MakeSphere(PaddleRadius),
-		QueryParams
-	);
-
-	// Only process wall hits (ignore horizontal floor surface hits where ImpactNormal.Z is high)
-	if (bHit && FMath::Abs(HitResult.ImpactNormal.Z) < 0.5f)
-	{
-		NewPos = HitResult.Location;
-		NewPos.Z = TableZHeight;
-		CurrentVelocity = FVector::ZeroVector;
-	}
-
-	OutPosition = NewPos;
-	OutVelocity = CurrentVelocity;
+bool AAirHockeyPaddle::Server_SendPaddlePosition_Validate(FVector ClampedPosition, FVector CalculatedVelocity)
+{
+	return true;
 }
 
 void AAirHockeyPaddle::Server_SendMove_Implementation(FPaddleMove Move)
 {
 	FVector NewPosition, NewVelocity;
-	PerformSweepMove(Move.TargetInputPosition, 1.0f / 60.0f, NewPosition, NewVelocity);
-	SetActorLocation(NewPosition);
+	PerformMove(Move.TargetInputPosition, 1.0f / 60.0f, NewPosition, NewVelocity);
+	SetActorLocation(NewPosition, true);
 
 	ServerState.Position = NewPosition;
 	ServerState.Velocity = NewVelocity;
@@ -223,15 +282,14 @@ void AAirHockeyPaddle::Client_ReconcileState_Implementation(FPaddleState Authori
 			return Move.SequenceNumber <= AuthoritativeState.LastProcessedSequenceNumber;
 		});
 
-		SetActorLocation(AuthoritativeState.Position);
+		SetActorLocation(AuthoritativeState.Position, true);
 		CurrentVelocity = AuthoritativeState.Velocity;
 
-		// Re-simulate remaining unacknowledged moves
 		for (const FPaddleMove& Move : UnacknowledgedMoves)
 		{
 			FVector Pos, Vel;
-			PerformSweepMove(Move.TargetInputPosition, 1.0f / 60.0f, Pos, Vel);
-			SetActorLocation(Pos);
+			PerformMove(Move.TargetInputPosition, 1.0f / 60.0f, Pos, Vel);
+			SetActorLocation(Pos, true);
 		}
 	}
 }
@@ -240,6 +298,6 @@ void AAirHockeyPaddle::OnRep_ServerState()
 {
 	if (!IsLocallyControlled())
 	{
-		SetActorLocation(ServerState.Position);
+		// Smoothly interpolated in Tick()
 	}
 }

@@ -1,33 +1,71 @@
 #include "AirHockeyPuck.h"
 #include "AirHockeyPaddle.h"
 #include "AirHockeyGameMode.h"
+#include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Kismet/GameplayStatics.h"
+
+static UStaticMesh* GetEngineCylinderMesh()
+{
+	static UStaticMesh* LoadedMesh = nullptr;
+	if (LoadedMesh) return LoadedMesh;
+
+	const TCHAR* Paths[] = {
+		TEXT("/Engine/BasicShapes/Cylinder.Cylinder"),
+		TEXT("/Engine/EngineMeshes/Cylinder.Cylinder"),
+		TEXT("/Engine/EditorMeshes/EditorShapes/Shape_Cylinder.Shape_Cylinder"),
+		TEXT("/Engine/BasicShapes/Cylinder")
+	};
+
+	for (const TCHAR* Path : Paths)
+	{
+		LoadedMesh = LoadObject<UStaticMesh>(nullptr, Path);
+		if (LoadedMesh)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY PUCK] Loaded Engine Cylinder Mesh from: %s"), Path);
+			return LoadedMesh;
+		}
+	}
+	return nullptr;
+}
 
 AAirHockeyPuck::AAirHockeyPuck()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 
-	RootSceneComponent = CreateDefaultSubobject<USceneComponent>(TEXT("RootComponent"));
-	SetRootComponent(RootSceneComponent);
+	CollisionSphere = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionSphere"));
+	CollisionSphere->InitSphereRadius(PuckRadius);
+	CollisionSphere->SetCollisionProfileName(TEXT("PhysicsActor"));
+	SetRootComponent(CollisionSphere);
 
 	PuckMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PuckMesh"));
-	PuckMesh->SetupAttachment(RootSceneComponent);
-	PuckMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision); // We handle custom physics tracing!
+	PuckMesh->SetupAttachment(CollisionSphere);
+	PuckMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> DefaultMesh(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-	if (DefaultMesh.Succeeded())
+	UStaticMesh* MeshObj = GetEngineCylinderMesh();
+	if (MeshObj)
 	{
-		PuckMesh->SetStaticMesh(DefaultMesh.Object);
-		PuckMesh->SetRelativeScale3D(FVector(0.5f, 0.5f, 0.1f));
+		PuckMesh->SetStaticMesh(MeshObj);
+		PuckMesh->SetRelativeScale3D(FVector(0.8f, 0.8f, 0.25f));
 	}
 }
 
 void AAirHockeyPuck::BeginPlay()
 {
 	Super::BeginPlay();
+
+	if (PuckMesh && !PuckMesh->GetStaticMesh())
+	{
+		UStaticMesh* MeshObj = GetEngineCylinderMesh();
+		if (MeshObj)
+		{
+			PuckMesh->SetStaticMesh(MeshObj);
+			PuckMesh->SetRelativeScale3D(FVector(0.8f, 0.8f, 0.25f));
+		}
+	}
 }
 
 void AAirHockeyPuck::Tick(float DeltaTime)
@@ -44,7 +82,6 @@ void AAirHockeyPuck::Tick(float DeltaTime)
 	}
 	else
 	{
-		// Step 3.4: Smooth Puck Entity Interpolation on Client side
 		FVector CurrentPos = GetActorLocation();
 		FVector TargetPos = ServerPuckState.Position + ServerPuckState.Velocity * DeltaTime;
 
@@ -81,11 +118,9 @@ void AAirHockeyPuck::UpdatePuckPhysics(float DeltaTime)
 	FVector NextPos = CurrentPos + CurrentVelocity * DeltaTime;
 	NextPos.Z = TableZHeight;
 
-	// Step 1.5: Goal Detection Check
 	float HalfLength = TableLength / 2.0f;
 	float HalfGoalWidth = GoalWidth / 2.0f;
 
-	// Puck crosses left goal line X < -HalfLength -> Player 2 Scores!
 	if (NextPos.X < -HalfLength)
 	{
 		if (FMath::Abs(NextPos.Y) <= HalfGoalWidth)
@@ -99,7 +134,6 @@ void AAirHockeyPuck::UpdatePuckPhysics(float DeltaTime)
 			return;
 		}
 	}
-	// Puck crosses right goal line X > HalfLength -> Player 1 Scores!
 	else if (NextPos.X > HalfLength)
 	{
 		if (FMath::Abs(NextPos.Y) <= HalfGoalWidth)
@@ -114,75 +148,45 @@ void AAirHockeyPuck::UpdatePuckPhysics(float DeltaTime)
 		}
 	}
 
-	// Steps 1.3 & 1.4: Sphere Sweep Trace for Collision with Table Walls and Paddles
-	FHitResult HitResult;
-	FCollisionQueryParams QueryParams;
-	QueryParams.AddIgnoredActor(this);
-	bool bHit = GetWorld()->SweepSingleByChannel(
-		HitResult,
-		CurrentPos,
-		NextPos,
-		FQuat::Identity,
-		ECC_WorldDynamic, // Check against dynamic actors (Paddles) first
-		FCollisionShape::MakeSphere(PuckRadius),
-		QueryParams
-	);
-	if (!bHit)
+	// Check 2D radius distance against all Paddles (handles both moving and stationary standing paddles)
+	TArray<AActor*> FoundPaddles;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPaddle::StaticClass(), FoundPaddles);
+	for (AActor* PaddleActor : FoundPaddles)
 	{
-		bHit = GetWorld()->SweepSingleByChannel(
-			HitResult,
-			CurrentPos,
-			NextPos,
-			FQuat::Identity,
-			ECC_WorldStatic, // Check against static table walls
-			FCollisionShape::MakeSphere(PuckRadius),
-			QueryParams
-		);
-	}
-	if (bHit)
-	{
-		FVector ImpactLocation = HitResult.Location;
-		ImpactLocation.Z = TableZHeight;
-		SetActorLocation(ImpactLocation);
-
-		AActor* HitActor = HitResult.GetActor();
-		AAirHockeyPaddle* Paddle = Cast<AAirHockeyPaddle>(HitActor);
-
+		AAirHockeyPaddle* Paddle = Cast<AAirHockeyPaddle>(PaddleActor);
 		if (Paddle)
 		{
-			// Step 1.4: Hit Paddle Physics
-			HandlePaddleHit(Paddle, Paddle->GetPaddleVelocity());
-		}
-		else
-		{
-			// Step 1.3: Hit Wall Reflection Physics
-			HandleWallBounce(HitResult.ImpactNormal);
+			float Dist2D = FVector::Dist2D(NextPos, Paddle->GetActorLocation());
+			if (Dist2D <= (PuckRadius + 60.0f)) // 40 + 60 = 100cm
+			{
+				HandlePaddleHit(Paddle, Paddle->GetPaddleVelocity());
+
+				FVector HitDir = (NextPos - Paddle->GetActorLocation()).GetSafeNormal2D();
+				if (HitDir.IsNearlyZero()) HitDir = FVector(1.0f, 0.0f, 0.0f);
+				NextPos = Paddle->GetActorLocation() + HitDir * (PuckRadius + 60.0f + 1.0f);
+				break;
+			}
 		}
 	}
-	else
+
+	float HalfWidth = TableWidth / 2.0f;
+	if (FMath::Abs(NextPos.Y) >= (HalfWidth - PuckRadius))
 	{
-		// Manual boundary checks for top/bottom walls if static mesh collision isn't blocking
-		float HalfWidth = TableWidth / 2.0f;
-		if (FMath::Abs(NextPos.Y) >= (HalfWidth - PuckRadius))
-		{
-			FVector Normal = (NextPos.Y > 0) ? FVector(0.0f, -1.0f, 0.0f) : FVector(0.0f, 1.0f, 0.0f);
-			HandleWallBounce(Normal);
-			NextPos.Y = FMath::Clamp(NextPos.Y, -HalfWidth + PuckRadius, HalfWidth - PuckRadius);
-		}
-		// End wall bounces (left and right walls outside goal area)
-		if (FMath::Abs(NextPos.X) >= (HalfLength - PuckRadius) && FMath::Abs(NextPos.Y) > HalfGoalWidth)
-		{
-			FVector Normal = (NextPos.X > 0) ? FVector(-1.0f, 0.0f, 0.0f) : FVector(1.0f, 0.0f, 0.0f);
-			HandleWallBounce(Normal);
-			NextPos.X = FMath::Clamp(NextPos.X, -HalfLength + PuckRadius, HalfLength - PuckRadius);
-		}
-		SetActorLocation(NextPos);
+		FVector Normal = (NextPos.Y > 0) ? FVector(0.0f, -1.0f, 0.0f) : FVector(0.0f, 1.0f, 0.0f);
+		HandleWallBounce(Normal);
+		NextPos.Y = FMath::Clamp(NextPos.Y, -HalfWidth + PuckRadius, HalfWidth - PuckRadius);
 	}
+	if (FMath::Abs(NextPos.X) >= (HalfLength - PuckRadius) && FMath::Abs(NextPos.Y) > HalfGoalWidth)
+	{
+		FVector Normal = (NextPos.X > 0) ? FVector(-1.0f, 0.0f, 0.0f) : FVector(1.0f, 0.0f, 0.0f);
+		HandleWallBounce(Normal);
+		NextPos.X = FMath::Clamp(NextPos.X, -HalfLength + PuckRadius, HalfLength - PuckRadius);
+	}
+	SetActorLocation(NextPos);
 }
 
 void AAirHockeyPuck::HandleWallBounce(const FVector& SurfaceNormal)
 {
-	// Step 1.3: Formula V_out = V_in - 2 * (V_in . N) * N
 	FVector Normal2D = FVector(SurfaceNormal.X, SurfaceNormal.Y, 0.0f).GetSafeNormal();
 	if (Normal2D.IsNearlyZero()) return;
 
@@ -192,9 +196,6 @@ void AAirHockeyPuck::HandleWallBounce(const FVector& SurfaceNormal)
 
 void AAirHockeyPuck::HandlePaddleHit(AActor* PaddleActor, const FVector& PaddleVelocity)
 {
-	// Step 1.4: Lose 80% initial kinetic energy -> magnitude scaled by sqrt(0.2) ≈ 0.4472
-	float ReducedSpeed = CurrentVelocity.Size() * FMath::Sqrt(0.2f);
-
 	FVector HitDir = (GetActorLocation() - PaddleActor->GetActorLocation());
 	HitDir.Z = 0.0f;
 	if (HitDir.IsNearlyZero())
@@ -206,16 +207,21 @@ void AAirHockeyPuck::HandlePaddleHit(AActor* PaddleActor, const FVector& PaddleV
 		HitDir.Normalize();
 	}
 
-	FVector NewVel = HitDir * ReducedSpeed;
-
-	// Add paddle momentum transfer if paddle velocity is significant
 	FVector PaddleVel2D = FVector(PaddleVelocity.X, PaddleVelocity.Y, 0.0f);
+
 	if (PaddleVel2D.SizeSquared() > 100.0f)
 	{
-		NewVel += PaddleVel2D * 0.8f;
+		// Active Swing: Momentum transfer from mouse swing + directional impulse
+		float SwingSpeed = PaddleVel2D.Size();
+		CurrentVelocity = HitDir * (250.0f + SwingSpeed * 0.85f);
+	}
+	else
+	{
+		// Idle Bumper: Soft bounce off standing paddle (50% energy loss)
+		float BounceSpeed = FMath::Max(CurrentVelocity.Size() * 0.5f, 150.0f);
+		CurrentVelocity = HitDir * BounceSpeed;
 	}
 
-	CurrentVelocity = NewVel;
 	CurrentVelocity.Z = 0.0f;
 }
 
