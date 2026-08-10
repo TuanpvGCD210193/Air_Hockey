@@ -82,12 +82,15 @@ void AAirHockeyPuck::Tick(float DeltaTime)
 	}
 	else
 	{
+		// STEP 6.1: Run local client predicted physics for instant 0ms local response
+		UpdatePuckPhysics(DeltaTime);
+
+		// STEP 6.2: Smoothly reconcile local prediction toward Server State
 		FVector CurrentPos = GetActorLocation();
 		FVector TargetPos = ServerPuckState.Position + ServerPuckState.Velocity * DeltaTime;
 
 		FVector InterpolatedPos = FMath::VInterpTo(CurrentPos, TargetPos, DeltaTime, 15.0f);
 		SetActorLocation(InterpolatedPos);
-		CurrentVelocity = ServerPuckState.Velocity;
 	}
 }
 

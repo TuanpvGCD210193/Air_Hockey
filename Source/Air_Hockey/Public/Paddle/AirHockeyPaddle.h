@@ -62,6 +62,12 @@ protected:
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Player")
 	int32 PlayerIndex = 1;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Materials")
+	class UMaterialInterface* Player1Material;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AirHockey|Materials")
+	class UMaterialInterface* Player2Material;
+
 	UPROPERTY(ReplicatedUsing = OnRep_ServerState)
 	FPaddleState ServerState;
 

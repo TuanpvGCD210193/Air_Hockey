@@ -70,15 +70,23 @@ void AAirHockeyPaddle::BeginPlay()
 			}
 		}
 
-		UMaterialInterface* BaseMat = PaddleMesh->GetMaterial(0);
-		if (BaseMat)
+		UMaterialInterface* AssignedMat = (PlayerIndex == 1) ? Player1Material : Player2Material;
+		if (AssignedMat)
 		{
-			UMaterialInstanceDynamic* DynMat = PaddleMesh->CreateDynamicMaterialInstance(0, BaseMat);
-			if (DynMat)
+			PaddleMesh->SetMaterial(0, AssignedMat);
+		}
+		else
+		{
+			UMaterialInterface* BaseMat = PaddleMesh->GetMaterial(0);
+			if (BaseMat)
 			{
-				FLinearColor Color = (PlayerIndex == 1) ? FLinearColor::Red : FLinearColor::Blue;
-				DynMat->SetVectorParameterValue(TEXT("Color"), Color);
-				DynMat->SetVectorParameterValue(TEXT("BaseColor"), Color);
+				UMaterialInstanceDynamic* DynMat = PaddleMesh->CreateDynamicMaterialInstance(0, BaseMat);
+				if (DynMat)
+				{
+					FLinearColor Color = (PlayerIndex == 1) ? FLinearColor::Red : FLinearColor::Blue;
+					DynMat->SetVectorParameterValue(TEXT("Color"), Color);
+					DynMat->SetVectorParameterValue(TEXT("BaseColor"), Color);
+				}
 			}
 		}
 	}
@@ -138,7 +146,7 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 			// STEP 2.1: Send position to Server via Fast Unreliable RPC
 			Server_SendPaddlePosition(FastSmoothPos, NewVel);
 
-			// STEP 3.1: Trigger Puck hit when Paddle speed > 10 cm/s & Distance2D <= 100 cm
+			// STEP 6.1: Local Client Immediate Impact Prediction (0ms Latency Launch)
 			if (NewVel.SizeSquared() > 100.0f)
 			{
 				TArray<AActor*> FoundPucks;
@@ -152,6 +160,9 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 						if (Dist2D <= (PaddleRadius + 40.0f)) // 60 + 40 = 100cm
 						{
 							Puck->HandlePaddleHit(this, NewVel);
+
+							UE_LOG(LogTemp, Warning, TEXT("[STEP 6.1 DEBUG] Local Client Impact Predicted! Player %d Speed = %.1f cm/s"), 
+								PlayerIndex, NewVel.Size());
 						}
 					}
 				}
