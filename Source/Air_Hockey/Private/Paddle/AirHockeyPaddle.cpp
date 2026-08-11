@@ -143,8 +143,41 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 			SetActorLocation(FastSmoothPos);
 			CurrentVelocity = NewVel;
 
-			// STEP 2.1: Send position to Server via Fast Unreliable RPC
-			Server_SendPaddlePosition(FastSmoothPos, NewVel);
+			// STEP 7.1: Adaptive Network Tick Rate Calculation
+			TimeSinceLastNetSend += DeltaTime;
+
+			float AngularSpeed = 0.0f;
+			if (!PreviousVelocity.IsNearlyZero() && !NewVel.IsNearlyZero())
+			{
+				FVector DirOld = PreviousVelocity.GetSafeNormal2D();
+				FVector DirNew = NewVel.GetSafeNormal2D();
+				float DotVal = FMath::Clamp(FVector::DotProduct(DirOld, DirNew), -1.0f, 1.0f);
+				float AngleRad = FMath::Acos(DotVal);
+				AngularSpeed = FMath::RadiansToDegrees(AngleRad) / FMath::Max(DeltaTime, 0.0001f);
+			}
+
+			// Determine Target Net Send Interval: 20 Hz (Straight/Idle), 40 Hz (Moderate), 60 Hz (Fast Curve/Circle)
+			float TargetInterval = 1.0f / 20.0f;
+			if (AngularSpeed >= 60.0f)
+			{
+				TargetInterval = 1.0f / 60.0f;
+			}
+			else if (AngularSpeed >= 15.0f)
+			{
+				TargetInterval = 1.0f / 40.0f;
+			}
+
+			float DistFromLastSent = FVector::Dist2D(FastSmoothPos, LastSentPosition);
+
+			// Send RPC when interval timer elapses OR moved distance > 30cm
+			if (TimeSinceLastNetSend >= TargetInterval || DistFromLastSent >= 30.0f)
+			{
+				Server_SendPaddlePosition(FastSmoothPos, NewVel);
+				TimeSinceLastNetSend = 0.0f;
+				LastSentPosition = FastSmoothPos;
+			}
+
+			PreviousVelocity = NewVel;
 
 			// STEP 6.1: Local Client Immediate Impact Prediction (0ms Latency Launch)
 			if (NewVel.SizeSquared() > 100.0f)
@@ -160,9 +193,6 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 						if (Dist2D <= (PaddleRadius + 40.0f)) // 60 + 40 = 100cm
 						{
 							Puck->HandlePaddleHit(this, NewVel);
-
-							UE_LOG(LogTemp, Warning, TEXT("[STEP 6.1 DEBUG] Local Client Impact Predicted! Player %d Speed = %.1f cm/s"), 
-								PlayerIndex, NewVel.Size());
 						}
 					}
 				}
@@ -171,8 +201,42 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 	}
 	else
 	{
-		// STEP 2.2: Remote Client Interpolation (Smooth Opponent Movement)
-		if (!ServerState.Position.IsZero())
+		// STEP 9.2: Jitter Buffering Release & Cubic Hermite Spline Curved Playback
+		if (bIsJitterBuffering)
+		{
+			JitterBufferTimer += DeltaTime;
+			if (JitterBufferTimer >= JitterBufferHoldTime || SnapshotBuffer.Num() >= 3)
+			{
+				bIsJitterBuffering = false;
+			}
+			else
+			{
+				// Hold position for 35ms while buffer accumulates fresh snapshots
+				return;
+			}
+		}
+
+		if (SnapshotBuffer.Num() >= 2)
+		{
+			const FPaddleSnapshot& Snap0 = SnapshotBuffer[SnapshotBuffer.Num() - 2];
+			const FPaddleSnapshot& Snap1 = SnapshotBuffer[SnapshotBuffer.Num() - 1];
+
+			float TimeGap = FMath::Max(Snap1.TimeStamp - Snap0.TimeStamp, 0.001f);
+
+			FVector P0 = Snap0.Position;
+			FVector T0 = Snap0.Velocity * TimeGap;
+			FVector P1 = Snap1.Position;
+			FVector T1 = Snap1.Velocity * TimeGap;
+
+			FVector CurrentPos = GetActorLocation();
+			FVector SmoothCurvedPos = FMath::CubicInterp(P0, T0, P1, T1, FMath::Clamp(DeltaTime * 20.0f, 0.0f, 1.0f));
+
+			// Smooth fallback to ensure continuity
+			SmoothCurvedPos = FMath::VInterpTo(CurrentPos, Snap1.Position, DeltaTime, 35.0f);
+			SetActorLocation(SmoothCurvedPos);
+			CurrentVelocity = Snap1.Velocity;
+		}
+		else if (!ServerState.Position.IsZero())
 		{
 			FVector InterpPos = FMath::VInterpTo(GetActorLocation(), ServerState.Position, DeltaTime, 30.0f);
 			SetActorLocation(InterpPos);
@@ -242,6 +306,18 @@ void AAirHockeyPaddle::Server_SendPaddlePosition_Implementation(FVector ClampedP
 	ServerState.Position = ValidatedPos;
 	ServerState.Velocity = CalculatedVelocity;
 
+	// STEP 10.1: Direct Server-to-Client RPC Relay to the Opponent's possessed Paddle
+	TArray<AActor*> FoundPaddles;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPaddle::StaticClass(), FoundPaddles);
+	for (AActor* PaddleActor : FoundPaddles)
+	{
+		AAirHockeyPaddle* OtherPaddle = Cast<AAirHockeyPaddle>(PaddleActor);
+		if (OtherPaddle && OtherPaddle != this && OtherPaddle->GetPlayerIndex() != PlayerIndex)
+		{
+			OtherPaddle->Client_ReceiveOpponentPaddlePosition(PlayerIndex, ValidatedPos, ValidatedVel);
+		}
+	}
+
 	// STEP 3.2: Server-Authoritative Puck Hit Physics Launch
 	if (CalculatedVelocity.SizeSquared() > 100.0f)
 	{
@@ -257,6 +333,27 @@ void AAirHockeyPaddle::Server_SendPaddlePosition_Implementation(FVector ClampedP
 				{
 					Puck->HandlePaddleHit(this, CalculatedVelocity);
 				}
+			}
+		}
+	}
+}
+
+void AAirHockeyPaddle::Client_ReceiveOpponentPaddlePosition_Implementation(int32 SenderPlayerIndex, FVector Position, FVector Velocity)
+{
+	// Forward snapshot to the local proxy paddle representing SenderPlayerIndex
+	TArray<AActor*> FoundPaddles;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPaddle::StaticClass(), FoundPaddles);
+	for (AActor* PaddleActor : FoundPaddles)
+	{
+		AAirHockeyPaddle* RemoteProxy = Cast<AAirHockeyPaddle>(PaddleActor);
+		if (RemoteProxy && !RemoteProxy->IsLocallyControlled() && RemoteProxy->GetPlayerIndex() == SenderPlayerIndex)
+		{
+			float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+			RemoteProxy->SnapshotBuffer.Add(FPaddleSnapshot(Position, Velocity, CurrentTime));
+
+			if (RemoteProxy->SnapshotBuffer.Num() > 5)
+			{
+				RemoteProxy->SnapshotBuffer.RemoveAt(0);
 			}
 		}
 	}
@@ -309,6 +406,19 @@ void AAirHockeyPaddle::OnRep_ServerState()
 {
 	if (!IsLocallyControlled())
 	{
-		// Smoothly interpolated in Tick()
+		float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		SnapshotBuffer.Add(FPaddleSnapshot(ServerState.Position, ServerState.Velocity, CurrentTime));
+
+		if (SnapshotBuffer.Num() > 5)
+		{
+			SnapshotBuffer.RemoveAt(0);
+		}
+
+		// STEP 9.1: Fast Motion Spike Detection & Jitter Buffering Trigger
+		if (ServerState.Velocity.SizeSquared() > 250000.0f && SnapshotBuffer.Num() < 3)
+		{
+			bIsJitterBuffering = true;
+			JitterBufferTimer = 0.0f;
+		}
 	}
 }

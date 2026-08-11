@@ -25,6 +25,10 @@ public:
 	UFUNCTION(Server, Unreliable, WithValidation)
 	void Server_SendPaddlePosition(FVector ClampedPosition, FVector CalculatedVelocity);
 
+	// STEP 10.1: Direct Server-to-Client RPC Relay to Opponent Owner
+	UFUNCTION(Client, Unreliable)
+	void Client_ReceiveOpponentPaddlePosition(int32 SenderPlayerIndex, FVector Position, FVector Velocity);
+
 	// Client-Side Prediction & Server Reconciliation RPCs
 	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_SendMove(FPaddleMove Move);
@@ -81,4 +85,28 @@ private:
 	uint32 CurrentSequenceNumber = 0;
 	FVector CurrentVelocity = FVector::ZeroVector;
 	FVector LastValidTargetInput = FVector::ZeroVector;
+
+	// STEP 7.1: Adaptive Network Tick Rate tracking variables
+	float TimeSinceLastNetSend = 0.0f;
+	FVector PreviousVelocity = FVector::ZeroVector;
+	FVector LastSentPosition = FVector::ZeroVector;
+
+	// STEP 8.1: Client Snapshot Buffer for Curved Spline Interpolation
+	struct FPaddleSnapshot
+	{
+		FVector Position = FVector::ZeroVector;
+		FVector Velocity = FVector::ZeroVector;
+		float TimeStamp = 0.0f;
+
+		FPaddleSnapshot() {}
+		FPaddleSnapshot(const FVector& InPos, const FVector& InVel, float InTime)
+			: Position(InPos), Velocity(InVel), TimeStamp(InTime) {}
+	};
+
+	TArray<FPaddleSnapshot> SnapshotBuffer;
+
+	// STEP 9.1: Jitter Buffering variables
+	bool bIsJitterBuffering = false;
+	float JitterBufferTimer = 0.0f;
+	float JitterBufferHoldTime = 0.035f; // 35ms initial buffering delay
 };
