@@ -143,41 +143,13 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 			SetActorLocation(FastSmoothPos);
 			CurrentVelocity = NewVel;
 
-			// STEP 7.1: Adaptive Network Tick Rate Calculation
-			TimeSinceLastNetSend += DeltaTime;
-
-			float AngularSpeed = 0.0f;
-			if (!PreviousVelocity.IsNearlyZero() && !NewVel.IsNearlyZero())
-			{
-				FVector DirOld = PreviousVelocity.GetSafeNormal2D();
-				FVector DirNew = NewVel.GetSafeNormal2D();
-				float DotVal = FMath::Clamp(FVector::DotProduct(DirOld, DirNew), -1.0f, 1.0f);
-				float AngleRad = FMath::Acos(DotVal);
-				AngularSpeed = FMath::RadiansToDegrees(AngleRad) / FMath::Max(DeltaTime, 0.0001f);
-			}
-
-			// Determine Target Net Send Interval: 20 Hz (Straight/Idle), 40 Hz (Moderate), 60 Hz (Fast Curve/Circle)
-			float TargetInterval = 1.0f / 20.0f;
-			if (AngularSpeed >= 60.0f)
-			{
-				TargetInterval = 1.0f / 60.0f;
-			}
-			else if (AngularSpeed >= 15.0f)
-			{
-				TargetInterval = 1.0f / 40.0f;
-			}
-
+			// STEP 11.1: Uncapped Frame-Rate Mouse Streaming (120Hz / 144Hz / 240Hz)
 			float DistFromLastSent = FVector::Dist2D(FastSmoothPos, LastSentPosition);
-
-			// Send RPC when interval timer elapses OR moved distance > 30cm
-			if (TimeSinceLastNetSend >= TargetInterval || DistFromLastSent >= 30.0f)
+			if (NewVel.SizeSquared() > 10.0f || DistFromLastSent > 0.1f)
 			{
 				Server_SendPaddlePosition(FastSmoothPos, NewVel);
-				TimeSinceLastNetSend = 0.0f;
 				LastSentPosition = FastSmoothPos;
 			}
-
-			PreviousVelocity = NewVel;
 
 			// STEP 6.1: Local Client Immediate Impact Prediction (0ms Latency Launch)
 			if (NewVel.SizeSquared() > 100.0f)
@@ -229,11 +201,13 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 			FVector T1 = Snap1.Velocity * TimeGap;
 
 			FVector CurrentPos = GetActorLocation();
-			FVector SmoothCurvedPos = FMath::CubicInterp(P0, T0, P1, T1, FMath::Clamp(DeltaTime * 20.0f, 0.0f, 1.0f));
+			FVector SmoothCurvedPos = FMath::CubicInterp(P0, T0, P1, T1, FMath::Clamp(DeltaTime * 35.0f, 0.0f, 1.0f));
 
-			// Smooth fallback to ensure continuity
-			SmoothCurvedPos = FMath::VInterpTo(CurrentPos, Snap1.Position, DeltaTime, 35.0f);
-			SetActorLocation(SmoothCurvedPos);
+			// STEP 12.1: Dead Reckoning Velocity Extrapolation (Zero Stutter Prediction)
+			FVector DeadReckoningPos = Snap1.Position + (Snap1.Velocity * DeltaTime);
+			FVector FinalTargetPos = FMath::VInterpTo(SmoothCurvedPos, DeadReckoningPos, DeltaTime, 15.0f);
+
+			SetActorLocation(FinalTargetPos);
 			CurrentVelocity = Snap1.Velocity;
 		}
 		else if (!ServerState.Position.IsZero())
@@ -349,6 +323,9 @@ void AAirHockeyPaddle::Client_ReceiveOpponentPaddlePosition_Implementation(int32
 		if (RemoteProxy && !RemoteProxy->IsLocallyControlled() && RemoteProxy->GetPlayerIndex() == SenderPlayerIndex)
 		{
 			float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+			float TimeGap = (RemoteProxy->SnapshotBuffer.Num() > 0) ? (CurrentTime - RemoteProxy->SnapshotBuffer.Last().TimeStamp) : 0.016f;
+			float PacketHz = (TimeGap > 0.0001f) ? (1.0f / TimeGap) : 0.0f;
+
 			RemoteProxy->SnapshotBuffer.Add(FPaddleSnapshot(Position, Velocity, CurrentTime));
 
 			if (RemoteProxy->SnapshotBuffer.Num() > 5)
