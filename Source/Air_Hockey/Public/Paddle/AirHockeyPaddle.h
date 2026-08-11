@@ -86,12 +86,10 @@ private:
 	FVector CurrentVelocity = FVector::ZeroVector;
 	FVector LastValidTargetInput = FVector::ZeroVector;
 
-	// STEP 7.1: Adaptive Network Tick Rate tracking variables
-	float TimeSinceLastNetSend = 0.0f;
-	FVector PreviousVelocity = FVector::ZeroVector;
+	// Unthrottled 0ms network tracking
 	FVector LastSentPosition = FVector::ZeroVector;
 
-	// STEP 8.1: Client Snapshot Buffer for Curved Spline Interpolation
+	// STEP 8.1: Client Snapshot Buffer for Rollback & Curved Spline Interpolation
 	struct FPaddleSnapshot
 	{
 		FVector Position = FVector::ZeroVector;
@@ -105,8 +103,18 @@ private:
 
 	TArray<FPaddleSnapshot> SnapshotBuffer;
 
-	// STEP 9.1: Jitter Buffering variables
-	bool bIsJitterBuffering = false;
-	float JitterBufferTimer = 0.0f;
-	float JitterBufferHoldTime = 0.035f; // 35ms initial buffering delay
+	// STEP 14.2: Deterministic Rollback State Struct & Re-Simulation Engine
+	struct FPaddleRollbackState
+	{
+		uint32 SequenceNumber = 0;
+		FVector Position = FVector::ZeroVector;
+		FVector Velocity = FVector::ZeroVector;
+		float TimeStamp = 0.0f;
+
+		FPaddleRollbackState() {}
+		FPaddleRollbackState(uint32 InSeq, const FVector& InPos, const FVector& InVel, float InTime)
+			: SequenceNumber(InSeq), Position(InPos), Velocity(InVel), TimeStamp(InTime) {}
+	};
+
+	void RollbackAndResimulate(const FPaddleRollbackState& AuthoritativeState);
 };

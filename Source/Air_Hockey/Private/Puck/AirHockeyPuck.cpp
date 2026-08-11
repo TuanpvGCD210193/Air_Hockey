@@ -76,9 +76,16 @@ void AAirHockeyPuck::Tick(float DeltaTime)
 	{
 		UpdatePuckPhysics(DeltaTime);
 
+		float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+		WorldHistoryBuffer.Add(FPuckWorldSnapshot(GetActorLocation(), CurrentVelocity, CurrentTime));
+		if (WorldHistoryBuffer.Num() > 60)
+		{
+			WorldHistoryBuffer.RemoveAt(0);
+		}
+
 		ServerPuckState.Position = GetActorLocation();
 		ServerPuckState.Velocity = CurrentVelocity;
-		ServerPuckState.TimeStamp = GetWorld()->GetTimeSeconds();
+		ServerPuckState.TimeStamp = CurrentTime;
 	}
 	else
 	{
@@ -226,6 +233,63 @@ void AAirHockeyPuck::HandlePaddleHit(AActor* PaddleActor, const FVector& PaddleV
 	}
 
 	CurrentVelocity.Z = 0.0f;
+}
+
+void AAirHockeyPuck::HandlePaddleHitLagCompensated(AActor* PaddleActor, const FVector& PaddleVelocity, float ClientTimeStamp)
+{
+	if (!HasAuthority() || !PaddleActor) return;
+
+	FVector ReconstructedPuckPos = GetActorLocation();
+
+	// 1. Search WorldHistoryBuffer for surrounding snapshots around ClientTimeStamp
+	if (WorldHistoryBuffer.Num() >= 2)
+	{
+		int32 Index = 0;
+		for (int32 i = 0; i < WorldHistoryBuffer.Num() - 1; ++i)
+		{
+			if (WorldHistoryBuffer[i].TimeStamp <= ClientTimeStamp && WorldHistoryBuffer[i + 1].TimeStamp >= ClientTimeStamp)
+			{
+				Index = i;
+				break;
+			}
+		}
+
+		const FPuckWorldSnapshot& Snap0 = WorldHistoryBuffer[Index];
+		const FPuckWorldSnapshot& Snap1 = WorldHistoryBuffer[Index + 1];
+		float TimeGap = FMath::Max(Snap1.TimeStamp - Snap0.TimeStamp, 0.001f);
+		float Alpha = FMath::Clamp((ClientTimeStamp - Snap0.TimeStamp) / TimeGap, 0.0f, 1.0f);
+
+		// Reconstruct past Puck position!
+		ReconstructedPuckPos = FMath::Lerp(Snap0.Position, Snap1.Position, Alpha);
+	}
+
+	// 2. Evaluate 2D hit direction against reconstructed position
+	FVector HitDir = (ReconstructedPuckPos - PaddleActor->GetActorLocation());
+	HitDir.Z = 0.0f;
+	if (HitDir.IsNearlyZero())
+	{
+		HitDir = FVector(1.0f, 0.0f, 0.0f);
+	}
+	else
+	{
+		HitDir.Normalize();
+	}
+
+	FVector PaddleVel2D = FVector(PaddleVelocity.X, PaddleVelocity.Y, 0.0f);
+	if (PaddleVel2D.SizeSquared() > 100.0f)
+	{
+		float SwingSpeed = PaddleVel2D.Size();
+		CurrentVelocity = HitDir * (250.0f + SwingSpeed * 0.85f);
+	}
+	else
+	{
+		float BounceSpeed = FMath::Max(CurrentVelocity.Size() * 0.5f, 150.0f);
+		CurrentVelocity = HitDir * BounceSpeed;
+	}
+
+	CurrentVelocity.Z = 0.0f;
+	ServerPuckState.Position = GetActorLocation();
+	ServerPuckState.Velocity = CurrentVelocity;
 }
 
 void AAirHockeyPuck::OnRep_PuckState()

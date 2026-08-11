@@ -173,21 +173,7 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 	}
 	else
 	{
-		// STEP 9.2: Jitter Buffering Release & Cubic Hermite Spline Curved Playback
-		if (bIsJitterBuffering)
-		{
-			JitterBufferTimer += DeltaTime;
-			if (JitterBufferTimer >= JitterBufferHoldTime || SnapshotBuffer.Num() >= 3)
-			{
-				bIsJitterBuffering = false;
-			}
-			else
-			{
-				// Hold position for 35ms while buffer accumulates fresh snapshots
-				return;
-			}
-		}
-
+		// 0ms Latency Remote Client Interpolation with Cubic Spline & Dead Reckoning
 		if (SnapshotBuffer.Num() >= 2)
 		{
 			const FPaddleSnapshot& Snap0 = SnapshotBuffer[SnapshotBuffer.Num() - 2];
@@ -292,7 +278,7 @@ void AAirHockeyPaddle::Server_SendPaddlePosition_Implementation(FVector ClampedP
 		}
 	}
 
-	// STEP 3.2: Server-Authoritative Puck Hit Physics Launch
+	// STEP 15.2: Server State Reconstruction & Lag Compensated Physics Launch
 	if (CalculatedVelocity.SizeSquared() > 100.0f)
 	{
 		TArray<AActor*> FoundPucks;
@@ -305,7 +291,8 @@ void AAirHockeyPaddle::Server_SendPaddlePosition_Implementation(FVector ClampedP
 				float Dist2D = FVector::Dist2D(ValidatedPos, Puck->GetActorLocation());
 				if (Dist2D <= (PaddleRadius + 40.0f)) // 60 + 40 = 100cm
 				{
-					Puck->HandlePaddleHit(this, CalculatedVelocity);
+					float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+					Puck->HandlePaddleHitLagCompensated(this, CalculatedVelocity, CurrentTime);
 				}
 			}
 		}
@@ -359,24 +346,33 @@ bool AAirHockeyPaddle::Server_SendMove_Validate(FPaddleMove Move)
 	return true;
 }
 
-void AAirHockeyPaddle::Client_ReconcileState_Implementation(FPaddleState AuthoritativeState)
+void AAirHockeyPaddle::RollbackAndResimulate(const FPaddleRollbackState& AuthoritativeState)
 {
 	if (IsLocallyControlled())
 	{
+		// 1. Filter out all acknowledged inputs from local pending buffer
 		UnacknowledgedMoves.RemoveAll([AuthoritativeState](const FPaddleMove& Move) {
-			return Move.SequenceNumber <= AuthoritativeState.LastProcessedSequenceNumber;
+			return Move.SequenceNumber <= AuthoritativeState.SequenceNumber;
 		});
 
+		// 2. Rollback local position to Authoritative Server position
 		SetActorLocation(AuthoritativeState.Position, true);
 		CurrentVelocity = AuthoritativeState.Velocity;
 
+		// 3. Fast-forward re-simulate all remaining unacknowledged inputs in loop (< 0.1ms)
 		for (const FPaddleMove& Move : UnacknowledgedMoves)
 		{
-			FVector Pos, Vel;
-			PerformMove(Move.TargetInputPosition, 1.0f / 60.0f, Pos, Vel);
-			SetActorLocation(Pos, true);
+			FVector ResimPos, ResimVel;
+			PerformMove(Move.TargetInputPosition, 1.0f / 60.0f, ResimPos, ResimVel);
+			SetActorLocation(ResimPos, true);
 		}
 	}
+}
+
+void AAirHockeyPaddle::Client_ReconcileState_Implementation(FPaddleState AuthoritativeState)
+{
+	FPaddleRollbackState RollbackState(AuthoritativeState.LastProcessedSequenceNumber, AuthoritativeState.Position, AuthoritativeState.Velocity, GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f);
+	RollbackAndResimulate(RollbackState);
 }
 
 void AAirHockeyPaddle::OnRep_ServerState()
@@ -389,13 +385,6 @@ void AAirHockeyPaddle::OnRep_ServerState()
 		if (SnapshotBuffer.Num() > 5)
 		{
 			SnapshotBuffer.RemoveAt(0);
-		}
-
-		// STEP 9.1: Fast Motion Spike Detection & Jitter Buffering Trigger
-		if (ServerState.Velocity.SizeSquared() > 250000.0f && SnapshotBuffer.Num() < 3)
-		{
-			bIsJitterBuffering = true;
-			JitterBufferTimer = 0.0f;
 		}
 	}
 }

@@ -23,6 +23,9 @@ public:
 	void HandleWallBounce(const FVector& SurfaceNormal);
 	void HandlePaddleHit(AActor* PaddleActor, const FVector& PaddleVelocity);
 
+	// STEP 15.2: Server State Reconstruction & Lag Compensated Hit Registration Engine
+	void HandlePaddleHitLagCompensated(AActor* PaddleActor, const FVector& PaddleVelocity, float ClientTimeStamp);
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -57,4 +60,19 @@ private:
 	FVector CurrentVelocity = FVector::ZeroVector;
 
 	void UpdatePuckPhysics(float DeltaTime);
+
+public:
+	// STEP 15.1: Server World History Snapshot Struct for State Reconstruction
+	struct FPuckWorldSnapshot
+	{
+		FVector Position = FVector::ZeroVector;
+		FVector Velocity = FVector::ZeroVector;
+		float TimeStamp = 0.0f;
+
+		FPuckWorldSnapshot() {}
+		FPuckWorldSnapshot(const FVector& InPos, const FVector& InVel, float InTime)
+			: Position(InPos), Velocity(InVel), TimeStamp(InTime) {}
+	};
+
+	TArray<FPuckWorldSnapshot> WorldHistoryBuffer;
 };
