@@ -82,6 +82,18 @@ Source/Air_Hockey/
 6. Enjoy the fast-paced multiplayer Air Hockey match! 🏒
 
 ---
+## Emperor Approved
+<p align="center">
+  <img
+    width="588"
+    height="425"
+    alt="1000ea0453e8917477b766b554e2143f"
+    src="https://github.com/user-attachments/assets/e24f0939-49d9-4d0e-8191-4348c73bec94"
+  />
+</p>
 
+---
 ## 📜 License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+
