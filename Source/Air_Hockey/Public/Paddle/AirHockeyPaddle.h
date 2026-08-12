@@ -43,6 +43,10 @@ public:
 	UFUNCTION(Client, Reliable)
 	void Client_ReconcileState(FPaddleState AuthoritativeState);
 
+	// STEP 22.1: Server Hit Request RPC for Instant Puck Launch without Affecting Paddle Smoothness
+	UFUNCTION(Server, Reliable, WithValidation)
+	void Server_RequestPuckHit(class AAirHockeyPuck* Puck, FVector HitVelocity, float ClientTimeStamp);
+
 protected:
 	virtual void BeginPlay() override;
 

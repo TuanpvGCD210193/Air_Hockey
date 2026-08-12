@@ -162,7 +162,7 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 				Server_Send10msPacket(Packet);
 			}
 
-			// STEP 6.1: Local Client Immediate Impact Prediction (0ms Latency Launch)
+			// STEP 6.1: Local Client Immediate Impact Prediction & STEP 22.1: Server Hit Request RPC
 			if (NewVel.SizeSquared() > 100.0f)
 			{
 				TArray<AActor*> FoundPucks;
@@ -176,6 +176,9 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 						if (Dist2D <= (PaddleRadius + 40.0f)) // 60 + 40 = 100cm
 						{
 							Puck->HandlePaddleHit(this, NewVel);
+
+							float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+							Server_RequestPuckHit(Puck, NewVel, CurrentTime);
 						}
 					}
 				}
@@ -519,4 +522,17 @@ void AAirHockeyPaddle::OnRep_ServerState()
 			SnapshotBuffer.RemoveAt(0);
 		}
 	}
+}
+
+void AAirHockeyPaddle::Server_RequestPuckHit_Implementation(AAirHockeyPuck* Puck, FVector HitVelocity, float ClientTimeStamp)
+{
+	if (Puck)
+	{
+		Puck->HandlePaddleHitLagCompensated(this, HitVelocity, ClientTimeStamp);
+	}
+}
+
+bool AAirHockeyPaddle::Server_RequestPuckHit_Validate(AAirHockeyPuck* Puck, FVector HitVelocity, float ClientTimeStamp)
+{
+	return true;
 }
