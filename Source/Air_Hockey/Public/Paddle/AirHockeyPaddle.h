@@ -21,13 +21,20 @@ public:
 	int32 GetPlayerIndex() const { return PlayerIndex; }
 	void SetPlayerIndex(int32 InIndex) { PlayerIndex = InIndex; }
 
-	// STEP 2.1: Fast Unreliable RPC for smooth position sync to Server
-	UFUNCTION(Server, Unreliable, WithValidation)
+	// STEP 17.1: Reliable Ordered RPC Queuing (Guaranteed Strict Packet Order)
+	UFUNCTION(Server, Reliable, WithValidation)
 	void Server_SendPaddlePosition(FVector ClampedPosition, FVector CalculatedVelocity);
 
-	// STEP 10.1: Direct Server-to-Client RPC Relay to Opponent Owner
-	UFUNCTION(Client, Unreliable)
+	// STEP 17.1: Direct Server-to-Client Reliable RPC Relay
+	UFUNCTION(Client, Reliable)
 	void Client_ReceiveOpponentPaddlePosition(int32 SenderPlayerIndex, FVector Position, FVector Velocity);
+
+	// STEP 18.1: 10ms High-Precision Fixed Sampler RPCs
+	UFUNCTION(Server, Unreliable, WithValidation)
+	void Server_Send10msPacket(FPaddle10msPacket Packet);
+
+	UFUNCTION(Client, Unreliable)
+	void Client_Receive10msPacket(FPaddle10msPacket Packet);
 
 	// Client-Side Prediction & Server Reconciliation RPCs
 	UFUNCTION(Server, Reliable, WithValidation)
@@ -102,6 +109,15 @@ private:
 	};
 
 	TArray<FPaddleSnapshot> SnapshotBuffer;
+	float SampleTimer = 0.0f;
+	uint32 LocalSequenceCounter = 0;
+	TArray<FPaddle10msSample> LocalSampleBuffer;
+
+	// STEP 19.1: Adaptive Jitter Buffer & Playback Clock Variables
+	float ClientPlaybackTime = 0.0f;
+	float AdaptivePlaybackRate = 1.0f;
+	bool bIsJitterBufferInitialized = false;
+	float TargetJitterDelay = 0.120f;
 
 	// STEP 14.2: Deterministic Rollback State Struct & Re-Simulation Engine
 	struct FPaddleRollbackState

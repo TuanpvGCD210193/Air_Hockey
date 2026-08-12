@@ -143,12 +143,23 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 			SetActorLocation(FastSmoothPos);
 			CurrentVelocity = NewVel;
 
-			// STEP 11.1: Uncapped Frame-Rate Mouse Streaming (120Hz / 144Hz / 240Hz)
-			float DistFromLastSent = FVector::Dist2D(FastSmoothPos, LastSentPosition);
-			if (NewVel.SizeSquared() > 10.0f || DistFromLastSent > 0.1f)
+			// STEP 18.1: 10ms Fixed High-Precision Sampler (100 Hz Mouse Collector)
+			SampleTimer += DeltaTime;
+			if (SampleTimer >= 0.010f)
 			{
-				Server_SendPaddlePosition(FastSmoothPos, NewVel);
-				LastSentPosition = FastSmoothPos;
+				SampleTimer = 0.0f;
+				float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+				LocalSampleBuffer.Add(FPaddle10msSample(FastSmoothPos, NewVel, LocalSequenceCounter++, CurrentTime));
+				if (LocalSampleBuffer.Num() > 4)
+				{
+					LocalSampleBuffer.RemoveAt(0);
+				}
+
+				FPaddle10msPacket Packet;
+				Packet.PlayerIndex = PlayerIndex;
+				Packet.RedundantSamples = LocalSampleBuffer;
+
+				Server_Send10msPacket(Packet);
 			}
 
 			// STEP 6.1: Local Client Immediate Impact Prediction (0ms Latency Launch)
@@ -173,32 +184,86 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 	}
 	else
 	{
-		// 0ms Latency Remote Client Interpolation with Cubic Spline & Dead Reckoning
+		// STEP 19.2: Adaptive Jitter Buffer & Playback Clock Engine (Zero-Teleport 100ms-500ms Ping Smoothing)
 		if (SnapshotBuffer.Num() >= 2)
 		{
-			const FPaddleSnapshot& Snap0 = SnapshotBuffer[SnapshotBuffer.Num() - 2];
-			const FPaddleSnapshot& Snap1 = SnapshotBuffer[SnapshotBuffer.Num() - 1];
+			if (!bIsJitterBufferInitialized)
+			{
+				ClientPlaybackTime = SnapshotBuffer[0].TimeStamp;
+				bIsJitterBufferInitialized = true;
+			}
 
-			float TimeGap = FMath::Max(Snap1.TimeStamp - Snap0.TimeStamp, 0.001f);
+			float LatestTime = SnapshotBuffer.Last().TimeStamp;
+			float CurrentBufferDelay = LatestTime - ClientPlaybackTime;
 
-			FVector P0 = Snap0.Position;
-			FVector T0 = Snap0.Velocity * TimeGap;
-			FVector P1 = Snap1.Position;
-			FVector T1 = Snap1.Velocity * TimeGap;
+			// Adaptive Time Dilation: Speed up or slow down clock smoothly to maintain ~120ms target buffer delay
+			if (CurrentBufferDelay > (TargetJitterDelay + 0.05f))
+			{
+				AdaptivePlaybackRate = 1.10f; // Speed up slightly to catch up
+			}
+			else if (CurrentBufferDelay < (TargetJitterDelay - 0.03f))
+			{
+				AdaptivePlaybackRate = 0.90f; // Slow down slightly to wait for network
+			}
+			else
+			{
+				AdaptivePlaybackRate = 1.0f;
+			}
 
-			FVector CurrentPos = GetActorLocation();
-			FVector SmoothCurvedPos = FMath::CubicInterp(P0, T0, P1, T1, FMath::Clamp(DeltaTime * 35.0f, 0.0f, 1.0f));
+			ClientPlaybackTime += DeltaTime * AdaptivePlaybackRate;
 
-			// STEP 12.1: Dead Reckoning Velocity Extrapolation (Zero Stutter Prediction)
-			FVector DeadReckoningPos = Snap1.Position + (Snap1.Velocity * DeltaTime);
-			FVector FinalTargetPos = FMath::VInterpTo(SmoothCurvedPos, DeadReckoningPos, DeltaTime, 15.0f);
+			// Find bounding snapshots around ClientPlaybackTime
+			int32 SnapIdx0 = -1;
+			int32 SnapIdx1 = -1;
 
-			SetActorLocation(FinalTargetPos);
-			CurrentVelocity = Snap1.Velocity;
+			for (int32 i = 0; i < SnapshotBuffer.Num() - 1; ++i)
+			{
+				if (SnapshotBuffer[i].TimeStamp <= ClientPlaybackTime && SnapshotBuffer[i + 1].TimeStamp >= ClientPlaybackTime)
+				{
+					SnapIdx0 = i;
+					SnapIdx1 = i + 1;
+					break;
+				}
+			}
+
+			if (SnapIdx0 != -1 && SnapIdx1 != -1)
+			{
+				const FPaddleSnapshot& Snap0 = SnapshotBuffer[SnapIdx0];
+				const FPaddleSnapshot& Snap1 = SnapshotBuffer[SnapIdx1];
+
+				float TimeGap = FMath::Max(Snap1.TimeStamp - Snap0.TimeStamp, 0.001f);
+				float Alpha = FMath::Clamp((ClientPlaybackTime - Snap0.TimeStamp) / TimeGap, 0.0f, 1.0f);
+
+				FVector P0 = Snap0.Position;
+				FVector T0 = Snap0.Velocity * TimeGap;
+				FVector P1 = Snap1.Position;
+				FVector T1 = Snap1.Velocity * TimeGap;
+
+				FVector SmoothCurvedPos = FMath::CubicInterp(P0, T0, P1, T1, Alpha);
+				FVector UltraSmoothPos = FMath::VInterpTo(GetActorLocation(), SmoothCurvedPos, DeltaTime, 45.0f);
+
+				SetActorLocation(UltraSmoothPos);
+				CurrentVelocity = FMath::Lerp(Snap0.Velocity, Snap1.Velocity, Alpha);
+			}
+			else if (ClientPlaybackTime > LatestTime)
+			{
+				// Extrapolate smoothly using dead reckoning if network stalls
+				const FPaddleSnapshot& LatestSnap = SnapshotBuffer.Last();
+				FVector ExtrapolatedPos = LatestSnap.Position + LatestSnap.Velocity * (ClientPlaybackTime - LatestTime);
+				FVector SmoothExtrapolated = FMath::VInterpTo(GetActorLocation(), ExtrapolatedPos, DeltaTime, 15.0f);
+
+				SetActorLocation(SmoothExtrapolated);
+				CurrentVelocity = LatestSnap.Velocity;
+			}
+
+			// Clean up old snapshots older than 1 second from current playback time
+			SnapshotBuffer.RemoveAll([this](const FPaddleSnapshot& Snap) {
+				return Snap.TimeStamp < (ClientPlaybackTime - 1.0f);
+			});
 		}
 		else if (!ServerState.Position.IsZero())
 		{
-			FVector InterpPos = FMath::VInterpTo(GetActorLocation(), ServerState.Position, DeltaTime, 30.0f);
+			FVector InterpPos = FMath::VInterpTo(GetActorLocation(), ServerState.Position, DeltaTime, 45.0f);
 			SetActorLocation(InterpPos);
 			CurrentVelocity = ServerState.Velocity;
 		}
@@ -316,6 +381,73 @@ void AAirHockeyPaddle::Client_ReceiveOpponentPaddlePosition_Implementation(int32
 			RemoteProxy->SnapshotBuffer.Add(FPaddleSnapshot(Position, Velocity, CurrentTime));
 
 			if (RemoteProxy->SnapshotBuffer.Num() > 5)
+			{
+				RemoteProxy->SnapshotBuffer.RemoveAt(0);
+			}
+		}
+	}
+}
+
+void AAirHockeyPaddle::Server_Send10msPacket_Implementation(FPaddle10msPacket Packet)
+{
+	// Direct Relay the 10ms redundant packet to the opponent's possessed Paddle
+	TArray<AActor*> FoundPaddles;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPaddle::StaticClass(), FoundPaddles);
+	for (AActor* PaddleActor : FoundPaddles)
+	{
+		AAirHockeyPaddle* OtherPaddle = Cast<AAirHockeyPaddle>(PaddleActor);
+		if (OtherPaddle && OtherPaddle != this && OtherPaddle->GetPlayerIndex() != PlayerIndex)
+		{
+			OtherPaddle->Client_Receive10msPacket(Packet);
+		}
+	}
+}
+
+bool AAirHockeyPaddle::Server_Send10msPacket_Validate(FPaddle10msPacket Packet)
+{
+	return true;
+}
+
+void AAirHockeyPaddle::Client_Receive10msPacket_Implementation(FPaddle10msPacket Packet)
+{
+	// Unpack all redundant 10ms samples into SnapshotBuffer
+	TArray<AActor*> FoundPaddles;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPaddle::StaticClass(), FoundPaddles);
+	for (AActor* PaddleActor : FoundPaddles)
+	{
+		AAirHockeyPaddle* RemoteProxy = Cast<AAirHockeyPaddle>(PaddleActor);
+		if (RemoteProxy && !RemoteProxy->IsLocallyControlled() && RemoteProxy->GetPlayerIndex() == Packet.PlayerIndex)
+		{
+			for (const FPaddle10msSample& Sample : Packet.RedundantSamples)
+			{
+				bool bAlreadyExists = false;
+				for (const FPaddleSnapshot& ExistingSnap : RemoteProxy->SnapshotBuffer)
+				{
+					if (FMath::IsNearlyEqual(ExistingSnap.TimeStamp, Sample.TimeStamp, 0.0001f))
+					{
+						bAlreadyExists = true;
+						break;
+					}
+				}
+
+				if (!bAlreadyExists)
+				{
+					RemoteProxy->SnapshotBuffer.Add(FPaddleSnapshot(Sample.Position, Sample.Velocity, Sample.TimeStamp));
+				}
+			}
+
+			// Keep SnapshotBuffer sorted chronologically by TimeStamp
+			RemoteProxy->SnapshotBuffer.Sort([](const FPaddleSnapshot& A, const FPaddleSnapshot& B) {
+				return A.TimeStamp < B.TimeStamp;
+			});
+
+			if (!RemoteProxy->bIsJitterBufferInitialized && RemoteProxy->SnapshotBuffer.Num() >= 3)
+			{
+				RemoteProxy->ClientPlaybackTime = RemoteProxy->SnapshotBuffer[0].TimeStamp;
+				RemoteProxy->bIsJitterBufferInitialized = true;
+			}
+
+			while (RemoteProxy->SnapshotBuffer.Num() > 15)
 			{
 				RemoteProxy->SnapshotBuffer.RemoveAt(0);
 			}
