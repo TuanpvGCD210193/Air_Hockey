@@ -61,6 +61,39 @@ struct AIR_HOCKEY_API FPuckState
 };
 
 /**
+ * STEP 23.1: 10ms High-Precision Puck Sampling & Net Packet
+ */
+USTRUCT(BlueprintType)
+struct AIR_HOCKEY_API FPuck10msSample
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FVector Position = FVector::ZeroVector;
+
+	UPROPERTY()
+	FVector Velocity = FVector::ZeroVector;
+
+	UPROPERTY()
+	float TimeStamp = 0.0f;
+
+	FPuck10msSample() {}
+	FPuck10msSample(const FVector& InPos, const FVector& InVel, float InTime)
+		: Position(InPos), Velocity(InVel), TimeStamp(InTime) {}
+};
+
+USTRUCT(BlueprintType)
+struct AIR_HOCKEY_API FPuck10msPacket
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FPuck10msSample> RedundantSamples;
+
+	FPuck10msPacket() {}
+};
+
+/**
  * STEP 18.1: 10ms High-Precision Mouse Sampling & Redundant Net Packet
  */
 USTRUCT(BlueprintType)
@@ -95,6 +128,10 @@ struct AIR_HOCKEY_API FPaddle10msPacket
 
 	UPROPERTY()
 	TArray<FPaddle10msSample> RedundantSamples;
+
+	// STEP 26.1: Dedicated Server Puck RPC Relay Packet Field
+	UPROPERTY()
+	TArray<FPuck10msSample> RedundantPuckSamples;
 
 	FPaddle10msPacket() {}
 };

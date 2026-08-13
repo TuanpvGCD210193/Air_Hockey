@@ -40,3 +40,11 @@ void AAirHockeyGameState::AddScore(int32 PlayerId, int32 Amount)
 		}
 	}
 }
+
+void AAirHockeyGameState::Multicast_OnGoalScored_Implementation(int32 ScoringPlayerId, int32 NewP1Score, int32 NewP2Score)
+{
+	Player1Score = NewP1Score;
+	Player2Score = NewP2Score;
+
+	UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY MULTICAST GOAL] Player %d scored! Score: %d - %d"), ScoringPlayerId, Player1Score, Player2Score);
+}

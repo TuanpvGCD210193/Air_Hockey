@@ -83,6 +83,9 @@ void AAirHockeyGameMode::OnGoalScored(int32 ScoringPlayerId)
 	{
 		GS->AddScore(ScoringPlayerId, 1);
 
+		// STEP 34.1: Broadcast NetMulticast RPC over UDP to sync HUD score on both clients instantly!
+		GS->Multicast_OnGoalScored(ScoringPlayerId, GS->Player1Score, GS->Player2Score);
+
 		UE_LOG(LogTemp, Warning, TEXT("[STEP 4.1 DEBUG] GOAL SCORED BY PLAYER %d! Score: Player 1 [%d] - [%d] Player 2"), 
 			ScoringPlayerId, GS->Player1Score, GS->Player2Score);
 

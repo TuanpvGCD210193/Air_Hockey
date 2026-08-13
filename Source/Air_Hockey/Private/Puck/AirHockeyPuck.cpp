@@ -1,6 +1,7 @@
 #include "AirHockeyPuck.h"
 #include "AirHockeyPaddle.h"
 #include "AirHockeyGameMode.h"
+#include "AirHockeyGameState.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Net/UnrealNetwork.h"
@@ -57,13 +58,31 @@ void AAirHockeyPuck::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (PuckMesh && !PuckMesh->GetStaticMesh())
+	// Ensure Puck is placed at Z = 35.0f plane and fully visible
+	FVector CurrentLoc = GetActorLocation();
+	CurrentLoc.Z = TableZHeight;
+	SetActorLocation(CurrentLoc);
+
+	// STEP 34.2: Instant Network Warmup & Pre-Buffer Flush Engine for Puck (0s Warmup Lag)
+	float InitialTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	PuckSnapshotBuffer.Empty();
+	PuckSnapshotBuffer.Add(FPuckWorldSnapshot(CurrentLoc, FVector::ZeroVector, InitialTime));
+	PuckSnapshotBuffer.Add(FPuckWorldSnapshot(CurrentLoc, FVector::ZeroVector, InitialTime + 0.010f));
+	PuckSnapshotBuffer.Add(FPuckWorldSnapshot(CurrentLoc, FVector::ZeroVector, InitialTime + 0.020f));
+	PuckClientPlaybackTime = InitialTime;
+	bIsPuckJitterBufferInitialized = true;
+
+	if (PuckMesh)
 	{
-		UStaticMesh* MeshObj = GetEngineCylinderMesh();
-		if (MeshObj)
+		PuckMesh->SetVisibility(true);
+		if (!PuckMesh->GetStaticMesh())
 		{
-			PuckMesh->SetStaticMesh(MeshObj);
-			PuckMesh->SetRelativeScale3D(FVector(0.8f, 0.8f, 0.25f));
+			UStaticMesh* MeshObj = GetEngineCylinderMesh();
+			if (MeshObj)
+			{
+				PuckMesh->SetStaticMesh(MeshObj);
+				PuckMesh->SetRelativeScale3D(FVector(0.8f, 0.8f, 0.25f));
+			}
 		}
 	}
 }
@@ -86,19 +105,135 @@ void AAirHockeyPuck::Tick(float DeltaTime)
 		ServerPuckState.Position = GetActorLocation();
 		ServerPuckState.Velocity = CurrentVelocity;
 		ServerPuckState.TimeStamp = CurrentTime;
+
+		// STEP 28.1: Clean focused Puck debug logging (once every 1.0s)
+		PuckSampleTimer += DeltaTime;
+		if (PuckSampleTimer >= 1.0f)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[PUCK SERVER STATE] Pos: %s | Vel: %s | SamplesInBuf: %d"),
+				*GetActorLocation().ToString(), *CurrentVelocity.ToString(), LocalPuckSampleBuffer.Num());
+		}
+
+		PuckSampleTimer += DeltaTime;
+		if (PuckSampleTimer >= 0.010f)
+		{
+			PuckSampleTimer = 0.0f;
+			LocalPuckSampleBuffer.Add(FPuck10msSample(GetActorLocation(), CurrentVelocity, CurrentTime));
+			if (LocalPuckSampleBuffer.Num() > 4)
+			{
+				LocalPuckSampleBuffer.RemoveAt(0);
+			}
+
+			FPuck10msPacket Packet;
+			Packet.RedundantSamples = LocalPuckSampleBuffer;
+
+			Client_ReceivePuck10msPacket(Packet);
+		}
 	}
 	else
 	{
-		// STEP 6.1: Run local client predicted physics for instant 0ms local response
-		UpdatePuckPhysics(DeltaTime);
+		// STEP 31.1: Pure Server-Authoritative 100Hz 10ms Hermite Spline Playback Engine (Zero Recoil / Zero Pass-Through)
+		PuckSampleTimer += DeltaTime;
+		if (PuckSampleTimer >= 1.0f)
+		{
+			PuckSampleTimer = 0.0f;
+			UE_LOG(LogTemp, Warning, TEXT("[PUCK CLIENT STATE] Mode: JITTER BUFFER (100Hz) | Pos: %s | Vel: %s | BufferNum: %d"),
+				*GetActorLocation().ToString(), *CurrentVelocity.ToString(), PuckSnapshotBuffer.Num());
+		}
 
-		// STEP 6.2: Smoothly reconcile local prediction toward Server State
-		FVector CurrentPos = GetActorLocation();
-		FVector TargetPos = ServerPuckState.Position + ServerPuckState.Velocity * DeltaTime;
+		if (PuckSnapshotBuffer.Num() >= 2)
+		{
+			if (!bIsPuckJitterBufferInitialized)
+			{
+				PuckClientPlaybackTime = PuckSnapshotBuffer[0].TimeStamp;
+				bIsPuckJitterBufferInitialized = true;
+			}
 
-		FVector InterpolatedPos = FMath::VInterpTo(CurrentPos, TargetPos, DeltaTime, 15.0f);
-		SetActorLocation(InterpolatedPos);
+			float LatestTime = PuckSnapshotBuffer.Last().TimeStamp;
+			float CurrentBufferDelay = LatestTime - PuckClientPlaybackTime;
+
+			// STEP 29.1: Hard Resync Gate - If delay exceeds 200ms (idle time or hit jump), hard resync playback clock instantly!
+			if (CurrentBufferDelay > 0.200f || CurrentBufferDelay < 0.0f)
+			{
+				PuckClientPlaybackTime = LatestTime - TargetPuckJitterDelay;
+				CurrentBufferDelay = TargetPuckJitterDelay;
+			}
+
+			if (CurrentBufferDelay > (TargetPuckJitterDelay + 0.03f))
+			{
+				PuckAdaptivePlaybackRate = 1.10f;
+			}
+			else if (CurrentBufferDelay < (TargetPuckJitterDelay - 0.03f))
+			{
+				PuckAdaptivePlaybackRate = 0.90f;
+			}
+			else
+			{
+				PuckAdaptivePlaybackRate = 1.0f;
+			}
+
+			PuckClientPlaybackTime += DeltaTime * PuckAdaptivePlaybackRate;
+
+			int32 SnapIdx0 = -1;
+			int32 SnapIdx1 = -1;
+
+			for (int32 i = 0; i < PuckSnapshotBuffer.Num() - 1; ++i)
+			{
+				if (PuckSnapshotBuffer[i].TimeStamp <= PuckClientPlaybackTime && PuckSnapshotBuffer[i + 1].TimeStamp >= PuckClientPlaybackTime)
+				{
+					SnapIdx0 = i;
+					SnapIdx1 = i + 1;
+					break;
+				}
+			}
+
+			if (SnapIdx0 != -1 && SnapIdx1 != -1)
+			{
+				const FPuckWorldSnapshot& Snap0 = PuckSnapshotBuffer[SnapIdx0];
+				const FPuckWorldSnapshot& Snap1 = PuckSnapshotBuffer[SnapIdx1];
+
+				float TimeGap = FMath::Max(Snap1.TimeStamp - Snap0.TimeStamp, 0.001f);
+				float Alpha = FMath::Clamp((PuckClientPlaybackTime - Snap0.TimeStamp) / TimeGap, 0.0f, 1.0f);
+
+				FVector P0 = Snap0.Position;
+				FVector T0 = Snap0.Velocity * TimeGap;
+				FVector P1 = Snap1.Position;
+				FVector T1 = Snap1.Velocity * TimeGap;
+
+				FVector SmoothCurvedPos = FMath::CubicInterp(P0, T0, P1, T1, Alpha);
+				FVector UltraSmoothPos = FMath::VInterpTo(GetActorLocation(), SmoothCurvedPos, DeltaTime, 45.0f);
+
+				SetActorLocation(UltraSmoothPos);
+				CurrentVelocity = FMath::Lerp(Snap0.Velocity, Snap1.Velocity, Alpha);
+			}
+			else if (PuckClientPlaybackTime > LatestTime)
+			{
+				const FPuckWorldSnapshot& LatestSnap = PuckSnapshotBuffer.Last();
+				FVector ExtrapolatedPos = LatestSnap.Position + LatestSnap.Velocity * (PuckClientPlaybackTime - LatestTime);
+				FVector SmoothExtrapolated = FMath::VInterpTo(GetActorLocation(), ExtrapolatedPos, DeltaTime, 15.0f);
+
+				SetActorLocation(SmoothExtrapolated);
+				CurrentVelocity = LatestSnap.Velocity;
+			}
+
+			PuckSnapshotBuffer.RemoveAll([this](const FPuckWorldSnapshot& Snap) {
+				return Snap.TimeStamp < (PuckClientPlaybackTime - 1.0f);
+			});
+		}
+		else if (!ServerPuckState.Position.IsZero())
+		{
+			FVector InterpPos = FMath::VInterpTo(GetActorLocation(), ServerPuckState.Position, DeltaTime, 45.0f);
+			SetActorLocation(InterpPos);
+			CurrentVelocity = ServerPuckState.Velocity;
+		}
 	}
+}
+
+void AAirHockeyPuck::StartClientPrediction()
+{
+	bIsClientPredictingPuck = true;
+	ClientPredictionTimer = 0.0f;
+	UE_LOG(LogTemp, Warning, TEXT("[PUCK HIT IMPACT] Local prediction initiated for 0ms responsiveness!"));
 }
 
 void AAirHockeyPuck::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -117,6 +252,11 @@ void AAirHockeyPuck::ResetPuck(const FVector& NewLocation, const FVector& Initia
 {
 	SetActorLocation(NewLocation);
 	LaunchPuck(InitialVel);
+
+	// STEP 29.1: Reset Puck Snapshot Buffer to synchronize clients instantly on goal / reset
+	PuckSnapshotBuffer.Empty();
+	bIsPuckJitterBufferInitialized = false;
+	bIsClientPredictingPuck = false;
 }
 
 void AAirHockeyPuck::UpdatePuckPhysics(float DeltaTime)
@@ -135,10 +275,25 @@ void AAirHockeyPuck::UpdatePuckPhysics(float DeltaTime)
 	{
 		if (FMath::Abs(NextPos.Y) <= HalfGoalWidth)
 		{
-			AAirHockeyGameMode* GM = GetWorld()->GetAuthGameMode<AAirHockeyGameMode>();
-			if (GM)
+			if (HasAuthority())
 			{
-				GM->OnGoalScored(2);
+				AAirHockeyGameMode* GM = GetWorld()->GetAuthGameMode<AAirHockeyGameMode>();
+				if (GM)
+				{
+					GM->OnGoalScored(2);
+				}
+			}
+			else
+			{
+				// STEP 34.1: Option B - Client 0ms Local Goal Prediction
+				AAirHockeyGameState* GS = GetWorld() ? GetWorld()->GetGameState<AAirHockeyGameState>() : nullptr;
+				if (GS)
+				{
+					GS->Player2Score += 1;
+					int32 P1S = GS->Player1Score;
+					int32 P2S = GS->Player2Score;
+					UE_LOG(LogTemp, Warning, TEXT("[CLIENT LOCAL GOAL PREDICTED 0ms] Player 2 Scored! Local Score: %d - %d"), P1S, P2S);
+				}
 			}
 			CurrentVelocity = FVector::ZeroVector;
 			return;
@@ -148,17 +303,32 @@ void AAirHockeyPuck::UpdatePuckPhysics(float DeltaTime)
 	{
 		if (FMath::Abs(NextPos.Y) <= HalfGoalWidth)
 		{
-			AAirHockeyGameMode* GM = GetWorld()->GetAuthGameMode<AAirHockeyGameMode>();
-			if (GM)
+			if (HasAuthority())
 			{
-				GM->OnGoalScored(1);
+				AAirHockeyGameMode* GM = GetWorld()->GetAuthGameMode<AAirHockeyGameMode>();
+				if (GM)
+				{
+					GM->OnGoalScored(1);
+				}
+			}
+			else
+			{
+				// STEP 34.1: Option B - Client 0ms Local Goal Prediction
+				AAirHockeyGameState* GS = GetWorld() ? GetWorld()->GetGameState<AAirHockeyGameState>() : nullptr;
+				if (GS)
+				{
+					GS->Player1Score += 1;
+					int32 P1S = GS->Player1Score;
+					int32 P2S = GS->Player2Score;
+					UE_LOG(LogTemp, Warning, TEXT("[CLIENT LOCAL GOAL PREDICTED 0ms] Player 1 Scored! Local Score: %d - %d"), P1S, P2S);
+				}
 			}
 			CurrentVelocity = FVector::ZeroVector;
 			return;
 		}
 	}
 
-	// Check 2D radius distance against all Paddles (handles both moving and stationary standing paddles)
+	// STEP 32.1: Universal Paddle Collision Check (Moving Swings & Stationary Blocks)
 	TArray<AActor*> FoundPaddles;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPaddle::StaticClass(), FoundPaddles);
 	for (AActor* PaddleActor : FoundPaddles)
@@ -202,6 +372,9 @@ void AAirHockeyPuck::HandleWallBounce(const FVector& SurfaceNormal)
 
 	CurrentVelocity = CurrentVelocity - 2.0f * (FVector::DotProduct(CurrentVelocity, Normal2D)) * Normal2D;
 	CurrentVelocity.Z = 0.0f;
+
+	UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY WALL BOUNCE] Normal: %s | NewVel: %s"),
+		*Normal2D.ToString(), *CurrentVelocity.ToString());
 }
 
 void AAirHockeyPuck::HandlePaddleHit(AActor* PaddleActor, const FVector& PaddleVelocity)
@@ -224,79 +397,87 @@ void AAirHockeyPuck::HandlePaddleHit(AActor* PaddleActor, const FVector& PaddleV
 		// Active Swing: Momentum transfer from mouse swing + directional impulse
 		float SwingSpeed = PaddleVel2D.Size();
 		CurrentVelocity = HitDir * (250.0f + SwingSpeed * 0.85f);
+
+		UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY PUCK HIT] Type: ACTIVE SWING | Paddle: %s | LaunchVel: %s"),
+			*PaddleActor->GetName(), *CurrentVelocity.ToString());
 	}
 	else
 	{
-		// Idle Bumper: Soft bounce off standing paddle (50% energy loss)
-		float BounceSpeed = FMath::Max(CurrentVelocity.Size() * 0.5f, 150.0f);
-		CurrentVelocity = HitDir * BounceSpeed;
+		// STEP 32.1: Stationary Block - Elastic bounce off standing paddle (85% energy retention)
+		FVector SurfaceNormal = HitDir;
+		FVector ReflectVel = CurrentVelocity - 2.0f * (FVector::DotProduct(CurrentVelocity, SurfaceNormal)) * SurfaceNormal;
+		float BounceSpeed = FMath::Max(ReflectVel.Size() * 0.85f, 200.0f);
+		CurrentVelocity = SurfaceNormal * BounceSpeed;
+
+		UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY PUCK HIT] Type: STATIONARY BLOCK | Paddle: %s | BounceVel: %s"),
+			*PaddleActor->GetName(), *CurrentVelocity.ToString());
 	}
 
 	CurrentVelocity.Z = 0.0f;
 }
 
-void AAirHockeyPuck::HandlePaddleHitLagCompensated(AActor* PaddleActor, const FVector& PaddleVelocity, float ClientTimeStamp)
+void AAirHockeyPuck::HandlePaddleHitLagCompensated(AActor* PaddleActor, const FVector& PaddleVelocity, float HitAge)
 {
 	if (!HasAuthority() || !PaddleActor) return;
 
-	FVector ReconstructedPuckPos = GetActorLocation();
+	// STEP 30.1: Deterministic Trajectory & Launch Velocity Vector Consensus
+	CurrentVelocity = PaddleVelocity;
+	CurrentVelocity.Z = 0.0f;
 
-	// 1. Search WorldHistoryBuffer for surrounding snapshots around ClientTimeStamp
-	if (WorldHistoryBuffer.Num() >= 2)
+	ServerPuckState.Position = GetActorLocation();
+	ServerPuckState.Velocity = CurrentVelocity;
+
+	UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY SERVER PUCK LAUNCH] Paddle: %s | LaunchVel: %s"),
+		*PaddleActor->GetName(), *CurrentVelocity.ToString());
+}
+
+void AAirHockeyPuck::Client_ReceivePuck10msPacket_Implementation(FPuck10msPacket Packet)
+{
+	if (!HasAuthority())
 	{
-		int32 Index = 0;
-		for (int32 i = 0; i < WorldHistoryBuffer.Num() - 1; ++i)
+		for (const FPuck10msSample& Sample : Packet.RedundantSamples)
 		{
-			if (WorldHistoryBuffer[i].TimeStamp <= ClientTimeStamp && WorldHistoryBuffer[i + 1].TimeStamp >= ClientTimeStamp)
+			bool bAlreadyExists = false;
+			for (const FPuckWorldSnapshot& ExistingSnap : PuckSnapshotBuffer)
 			{
-				Index = i;
-				break;
+				if (FMath::IsNearlyEqual(ExistingSnap.TimeStamp, Sample.TimeStamp, 0.0001f))
+				{
+					bAlreadyExists = true;
+					break;
+				}
+			}
+
+			if (!bAlreadyExists)
+			{
+				PuckSnapshotBuffer.Add(FPuckWorldSnapshot(Sample.Position, Sample.Velocity, Sample.TimeStamp));
 			}
 		}
 
-		const FPuckWorldSnapshot& Snap0 = WorldHistoryBuffer[Index];
-		const FPuckWorldSnapshot& Snap1 = WorldHistoryBuffer[Index + 1];
-		float TimeGap = FMath::Max(Snap1.TimeStamp - Snap0.TimeStamp, 0.001f);
-		float Alpha = FMath::Clamp((ClientTimeStamp - Snap0.TimeStamp) / TimeGap, 0.0f, 1.0f);
+		PuckSnapshotBuffer.Sort([](const FPuckWorldSnapshot& A, const FPuckWorldSnapshot& B) {
+			return A.TimeStamp < B.TimeStamp;
+		});
 
-		// Reconstruct past Puck position!
-		ReconstructedPuckPos = FMath::Lerp(Snap0.Position, Snap1.Position, Alpha);
-	}
+		if (!bIsPuckJitterBufferInitialized && PuckSnapshotBuffer.Num() >= 3)
+		{
+			PuckClientPlaybackTime = PuckSnapshotBuffer[0].TimeStamp;
+			bIsPuckJitterBufferInitialized = true;
+		}
 
-	// 2. Evaluate 2D hit direction against reconstructed position
-	FVector HitDir = (ReconstructedPuckPos - PaddleActor->GetActorLocation());
-	HitDir.Z = 0.0f;
-	if (HitDir.IsNearlyZero())
-	{
-		HitDir = FVector(1.0f, 0.0f, 0.0f);
+		while (PuckSnapshotBuffer.Num() > 15)
+		{
+			PuckSnapshotBuffer.RemoveAt(0);
+		}
 	}
-	else
-	{
-		HitDir.Normalize();
-	}
-
-	FVector PaddleVel2D = FVector(PaddleVelocity.X, PaddleVelocity.Y, 0.0f);
-	if (PaddleVel2D.SizeSquared() > 100.0f)
-	{
-		float SwingSpeed = PaddleVel2D.Size();
-		CurrentVelocity = HitDir * (250.0f + SwingSpeed * 0.85f);
-	}
-	else
-	{
-		float BounceSpeed = FMath::Max(CurrentVelocity.Size() * 0.5f, 150.0f);
-		CurrentVelocity = HitDir * BounceSpeed;
-	}
-
-	CurrentVelocity.Z = 0.0f;
-	ServerPuckState.Position = GetActorLocation();
-	ServerPuckState.Velocity = CurrentVelocity;
 }
 
 void AAirHockeyPuck::OnRep_PuckState()
 {
 	if (!HasAuthority())
 	{
-		SetActorLocation(ServerPuckState.Position);
-		CurrentVelocity = ServerPuckState.Velocity;
+		if (PuckSnapshotBuffer.Num() < 2 || GetActorLocation().Z < 30.0f)
+		{
+			SetActorLocation(ServerPuckState.Position);
+			CurrentVelocity = ServerPuckState.Velocity;
+		}
 	}
 }

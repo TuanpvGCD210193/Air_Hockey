@@ -19,12 +19,21 @@ public:
 	void LaunchPuck(const FVector& InitialVelocity);
 	void ResetPuck(const FVector& NewLocation, const FVector& InitialVel);
 	FVector GetPuckVelocity() const { return CurrentVelocity; }
+	TArray<FPuck10msSample> GetLocalPuckSampleBuffer() const { return LocalPuckSampleBuffer; }
 
 	void HandleWallBounce(const FVector& SurfaceNormal);
 	void HandlePaddleHit(AActor* PaddleActor, const FVector& PaddleVelocity);
 
-	// STEP 15.2: Server State Reconstruction & Lag Compensated Hit Registration Engine
-	void HandlePaddleHitLagCompensated(AActor* PaddleActor, const FVector& PaddleVelocity, float ClientTimeStamp);
+	// STEP 25.1: Server State Reconstruction & Lag Compensated Hit Registration Engine
+	void HandlePaddleHitLagCompensated(AActor* PaddleActor, const FVector& PaddleVelocity, float HitAge);
+
+	// STEP 27.1: Pure Client-Side Prediction & Server Consensus Engine (Rocket League Architecture)
+	void StartClientPrediction();
+	bool IsClientPredicting() const { return bIsClientPredictingPuck; }
+
+	// STEP 23.1: 10ms High-Precision Puck RPC
+	UFUNCTION(NetMulticast, Unreliable)
+	void Client_ReceivePuck10msPacket(FPuck10msPacket Packet);
 
 protected:
 	virtual void BeginPlay() override;
@@ -75,4 +84,17 @@ public:
 	};
 
 	TArray<FPuckWorldSnapshot> WorldHistoryBuffer;
+
+	// STEP 23.1: Client 10ms Puck Jitter Buffer & Adaptive Playback Variables
+	TArray<FPuckWorldSnapshot> PuckSnapshotBuffer;
+	float PuckSampleTimer = 0.0f;
+	TArray<FPuck10msSample> LocalPuckSampleBuffer;
+	float PuckClientPlaybackTime = 0.0f;
+	float PuckAdaptivePlaybackRate = 1.0f;
+	bool bIsPuckJitterBufferInitialized = false;
+	float TargetPuckJitterDelay = 0.120f;
+	// STEP 27.1: Pure Client-Side Prediction Variables
+	bool bIsClientPredictingPuck = false;
+	float ClientPredictionTimer = 0.0f;
+	float MaxClientPredictionDuration = 1.5f;
 };

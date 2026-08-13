@@ -162,23 +162,29 @@ void AAirHockeyPaddle::Tick(float DeltaTime)
 				Server_Send10msPacket(Packet);
 			}
 
-			// STEP 6.1: Local Client Immediate Impact Prediction & STEP 22.1: Server Hit Request RPC
+			// STEP 6.1: Local Client Immediate Impact Prediction & STEP 27.1: Rocket League Prediction Start
 			if (NewVel.SizeSquared() > 100.0f)
 			{
-				TArray<AActor*> FoundPucks;
-				UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPuck::StaticClass(), FoundPucks);
-				for (AActor* PuckActor : FoundPucks)
+				float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+				if (CurrentTime - LastPuckHitTime >= PuckHitCooldown)
 				{
-					AAirHockeyPuck* Puck = Cast<AAirHockeyPuck>(PuckActor);
-					if (Puck)
+					TArray<AActor*> FoundPucks;
+					UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPuck::StaticClass(), FoundPucks);
+					for (AActor* PuckActor : FoundPucks)
 					{
-						float Dist2D = FVector::Dist2D(FastSmoothPos, Puck->GetActorLocation());
-						if (Dist2D <= (PaddleRadius + 40.0f)) // 60 + 40 = 100cm
+						AAirHockeyPuck* Puck = Cast<AAirHockeyPuck>(PuckActor);
+						if (Puck)
 						{
-							Puck->HandlePaddleHit(this, NewVel);
+							float Dist2D = FVector::Dist2D(FastSmoothPos, Puck->GetActorLocation());
+							if (Dist2D <= (PaddleRadius + 40.0f)) // 60 + 40 = 100cm
+							{
+								LastPuckHitTime = CurrentTime;
+								Puck->HandlePaddleHit(this, NewVel);
 
-							float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-							Server_RequestPuckHit(Puck, NewVel, CurrentTime);
+								// STEP 31.1: Send exact computed 2D launch velocity vector to Server for 100Hz Hermite Spline relay
+								Server_RequestPuckHit(Puck, Puck->GetPuckVelocity(), 0.0f);
+								break;
+							}
 						}
 					}
 				}
@@ -393,15 +399,27 @@ void AAirHockeyPaddle::Client_ReceiveOpponentPaddlePosition_Implementation(int32
 
 void AAirHockeyPaddle::Server_Send10msPacket_Implementation(FPaddle10msPacket Packet)
 {
-	// Direct Relay the 10ms redundant packet to the opponent's possessed Paddle
+	// STEP 26.1: Attach Server's latest Puck 10ms samples to relay over possessed PlayerController channel
+	TArray<AActor*> FoundPucks;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPuck::StaticClass(), FoundPucks);
+	if (FoundPucks.Num() > 0)
+	{
+		AAirHockeyPuck* Puck = Cast<AAirHockeyPuck>(FoundPucks[0]);
+		if (Puck)
+		{
+			Packet.RedundantPuckSamples = Puck->GetLocalPuckSampleBuffer();
+		}
+	}
+
+	// Relay the 10ms redundant packet to all client paddles
 	TArray<AActor*> FoundPaddles;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPaddle::StaticClass(), FoundPaddles);
 	for (AActor* PaddleActor : FoundPaddles)
 	{
-		AAirHockeyPaddle* OtherPaddle = Cast<AAirHockeyPaddle>(PaddleActor);
-		if (OtherPaddle && OtherPaddle != this && OtherPaddle->GetPlayerIndex() != PlayerIndex)
+		AAirHockeyPaddle* TargetPaddle = Cast<AAirHockeyPaddle>(PaddleActor);
+		if (TargetPaddle)
 		{
-			OtherPaddle->Client_Receive10msPacket(Packet);
+			TargetPaddle->Client_Receive10msPacket(Packet);
 		}
 	}
 }
@@ -413,7 +431,7 @@ bool AAirHockeyPaddle::Server_Send10msPacket_Validate(FPaddle10msPacket Packet)
 
 void AAirHockeyPaddle::Client_Receive10msPacket_Implementation(FPaddle10msPacket Packet)
 {
-	// Unpack all redundant 10ms samples into SnapshotBuffer
+	// 1. Unpack all redundant 10ms paddle samples into SnapshotBuffer for remote proxy paddle
 	TArray<AActor*> FoundPaddles;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPaddle::StaticClass(), FoundPaddles);
 	for (AActor* PaddleActor : FoundPaddles)
@@ -453,6 +471,23 @@ void AAirHockeyPaddle::Client_Receive10msPacket_Implementation(FPaddle10msPacket
 			while (RemoteProxy->SnapshotBuffer.Num() > 15)
 			{
 				RemoteProxy->SnapshotBuffer.RemoveAt(0);
+			}
+		}
+	}
+
+	// 2. STEP 26.1: Unpack RedundantPuckSamples into local AAirHockeyPuck actor's 10ms Jitter Buffer
+	if (!HasAuthority() && Packet.RedundantPuckSamples.Num() > 0)
+	{
+		TArray<AActor*> FoundPucks;
+		UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPuck::StaticClass(), FoundPucks);
+		if (FoundPucks.Num() > 0)
+		{
+			AAirHockeyPuck* Puck = Cast<AAirHockeyPuck>(FoundPucks[0]);
+			if (Puck)
+			{
+				FPuck10msPacket PuckPacket;
+				PuckPacket.RedundantSamples = Packet.RedundantPuckSamples;
+				Puck->Client_ReceivePuck10msPacket_Implementation(PuckPacket);
 			}
 		}
 	}
@@ -524,15 +559,18 @@ void AAirHockeyPaddle::OnRep_ServerState()
 	}
 }
 
-void AAirHockeyPaddle::Server_RequestPuckHit_Implementation(AAirHockeyPuck* Puck, FVector HitVelocity, float ClientTimeStamp)
+void AAirHockeyPaddle::Server_RequestPuckHit_Implementation(AAirHockeyPuck* Puck, FVector HitVelocity, float HitAge)
 {
+	UE_LOG(LogTemp, Warning, TEXT("[PADDLE SERVER HIT RPC RECEIVED] PlayerIndex: %d | PaddleActor: %s | HitAge: %.3f | ServerTime: %.3f | Velocity: %s"),
+		PlayerIndex, *GetName(), HitAge, GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f, *HitVelocity.ToString());
+
 	if (Puck)
 	{
-		Puck->HandlePaddleHitLagCompensated(this, HitVelocity, ClientTimeStamp);
+		Puck->HandlePaddleHitLagCompensated(this, HitVelocity, HitAge);
 	}
 }
 
-bool AAirHockeyPaddle::Server_RequestPuckHit_Validate(AAirHockeyPuck* Puck, FVector HitVelocity, float ClientTimeStamp)
+bool AAirHockeyPaddle::Server_RequestPuckHit_Validate(AAirHockeyPuck* Puck, FVector HitVelocity, float HitAge)
 {
 	return true;
 }

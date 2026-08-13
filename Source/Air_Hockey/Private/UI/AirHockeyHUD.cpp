@@ -14,7 +14,10 @@ void AAirHockeyHUD::DrawHUD()
 	if (!Canvas) return;
 
 	AAirHockeyGameState* GS = GetWorld() ? GetWorld()->GetGameState<AAirHockeyGameState>() : nullptr;
-	if (!GS) return;
+	int32 P1Score = GS ? GS->Player1Score : 0;
+	int32 P2Score = GS ? GS->Player2Score : 0;
+	bool bGameOver = GS ? GS->bIsGameOver : false;
+	int32 WinnerId = GS ? GS->WinningPlayerId : 0;
 
 	float ScreenWidth = Canvas->ClipX;
 	float ScreenHeight = Canvas->ClipY;
@@ -30,13 +33,25 @@ void AAirHockeyHUD::DrawHUD()
 	DrawRect(FLinearColor(0.2f, 0.6f, 1.0f, 1.0f), BarX + BarWidth / 2.0f, BarY + BarHeight - 3.0f, BarWidth / 2.0f, 3.0f);
 
 	UFont* RenderFont = GEngine ? GEngine->GetMediumFont() : nullptr;
+	if (!RenderFont && GEngine)
+	{
+		RenderFont = GEngine->GetSmallFont();
+	}
+	if (!RenderFont && GEngine)
+	{
+		RenderFont = GEngine->GetLargeFont();
+	}
+	if (!RenderFont && GEngine)
+	{
+		RenderFont = GEngine->GetSubtitleFont();
+	}
 
 	// Draw Player 1 (Red) Name
 	FString P1Name = TEXT("PLAYER 1");
 	DrawText(P1Name, FLinearColor(1.0f, 0.3f, 0.3f, 1.0f), BarX + 25.0f, BarY + 18.0f, RenderFont, 1.2f);
 
 	// Draw Center Replicated Score Text: "Player1Score  -  Player2Score"
-	FString ScoreText = FString::Printf(TEXT("%d   -   %d"), GS->Player1Score, GS->Player2Score);
+	FString ScoreText = FString::Printf(TEXT("%d   -   %d"), P1Score, P2Score);
 	DrawText(ScoreText, FLinearColor::Yellow, BarX + 215.0f, BarY + 16.0f, RenderFont, 1.4f);
 
 	// Draw Player 2 (Blue) Name
@@ -44,7 +59,7 @@ void AAirHockeyHUD::DrawHUD()
 	DrawText(P2Name, FLinearColor(0.3f, 0.7f, 1.0f, 1.0f), BarX + 380.0f, BarY + 18.0f, RenderFont, 1.2f);
 
 	// STEP 5.2: Victory Banner Overlay when Match Ends (10 Points Reached)
-	if (GS->bIsGameOver)
+	if (bGameOver)
 	{
 		float BannerW = 600.0f;
 		float BannerH = 100.0f;
@@ -55,7 +70,7 @@ void AAirHockeyHUD::DrawHUD()
 		DrawRect(FLinearColor::Yellow, BannerX, BannerY, BannerW, 4.0f);
 		DrawRect(FLinearColor::Yellow, BannerX, BannerY + BannerH - 4.0f, BannerW, 4.0f);
 
-		FString WinText = FString::Printf(TEXT("PLAYER %d WINS THE MATCH!"), GS->WinningPlayerId);
+		FString WinText = FString::Printf(TEXT("PLAYER %d WINS THE MATCH!"), WinnerId);
 		DrawText(WinText, FLinearColor::Yellow, BannerX + 110.0f, BannerY + 32.0f, RenderFont, 1.6f);
 	}
 }

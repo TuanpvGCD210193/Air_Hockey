@@ -16,6 +16,9 @@ public:
 
 	void AddScore(int32 PlayerId, int32 Amount);
 
+	UFUNCTION(NetMulticast, Reliable)
+	void Multicast_OnGoalScored(int32 ScoringPlayerId, int32 NewP1Score, int32 NewP2Score);
+
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "AirHockey|Score")
 	int32 Player1Score = 0;
 

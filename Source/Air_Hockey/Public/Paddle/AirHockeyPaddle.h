@@ -43,9 +43,9 @@ public:
 	UFUNCTION(Client, Reliable)
 	void Client_ReconcileState(FPaddleState AuthoritativeState);
 
-	// STEP 22.1: Server Hit Request RPC for Instant Puck Launch without Affecting Paddle Smoothness
+	// STEP 25.1: Server Hit Request RPC with HitAge & Cooldown Gate
 	UFUNCTION(Server, Reliable, WithValidation)
-	void Server_RequestPuckHit(class AAirHockeyPuck* Puck, FVector HitVelocity, float ClientTimeStamp);
+	void Server_RequestPuckHit(class AAirHockeyPuck* Puck, FVector HitVelocity, float HitAge);
 
 protected:
 	virtual void BeginPlay() override;
@@ -122,6 +122,10 @@ private:
 	float AdaptivePlaybackRate = 1.0f;
 	bool bIsJitterBufferInitialized = false;
 	float TargetJitterDelay = 0.120f;
+
+	// STEP 25.1: Hit Debounce Cooldown Gate
+	float LastPuckHitTime = 0.0f;
+	float PuckHitCooldown = 0.200f;
 
 	// STEP 14.2: Deterministic Rollback State Struct & Re-Simulation Engine
 	struct FPaddleRollbackState
