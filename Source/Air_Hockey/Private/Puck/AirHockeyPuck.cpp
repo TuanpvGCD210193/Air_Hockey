@@ -106,14 +106,6 @@ void AAirHockeyPuck::Tick(float DeltaTime)
 		ServerPuckState.Velocity = CurrentVelocity;
 		ServerPuckState.TimeStamp = CurrentTime;
 
-		// STEP 28.1: Clean focused Puck debug logging (once every 1.0s)
-		PuckSampleTimer += DeltaTime;
-		if (PuckSampleTimer >= 1.0f)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[PUCK SERVER STATE] Pos: %s | Vel: %s | SamplesInBuf: %d"),
-				*GetActorLocation().ToString(), *CurrentVelocity.ToString(), LocalPuckSampleBuffer.Num());
-		}
-
 		PuckSampleTimer += DeltaTime;
 		if (PuckSampleTimer >= 0.010f)
 		{
@@ -132,15 +124,6 @@ void AAirHockeyPuck::Tick(float DeltaTime)
 	}
 	else
 	{
-		// STEP 31.1: Pure Server-Authoritative 100Hz 10ms Hermite Spline Playback Engine (Zero Recoil / Zero Pass-Through)
-		PuckSampleTimer += DeltaTime;
-		if (PuckSampleTimer >= 1.0f)
-		{
-			PuckSampleTimer = 0.0f;
-			UE_LOG(LogTemp, Warning, TEXT("[PUCK CLIENT STATE] Mode: JITTER BUFFER (100Hz) | Pos: %s | Vel: %s | BufferNum: %d"),
-				*GetActorLocation().ToString(), *CurrentVelocity.ToString(), PuckSnapshotBuffer.Num());
-		}
-
 		if (PuckSnapshotBuffer.Num() >= 2)
 		{
 			if (!bIsPuckJitterBufferInitialized)
@@ -233,7 +216,6 @@ void AAirHockeyPuck::StartClientPrediction()
 {
 	bIsClientPredictingPuck = true;
 	ClientPredictionTimer = 0.0f;
-	UE_LOG(LogTemp, Warning, TEXT("[PUCK HIT IMPACT] Local prediction initiated for 0ms responsiveness!"));
 }
 
 void AAirHockeyPuck::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -290,9 +272,6 @@ void AAirHockeyPuck::UpdatePuckPhysics(float DeltaTime)
 				if (GS)
 				{
 					GS->Player2Score += 1;
-					int32 P1S = GS->Player1Score;
-					int32 P2S = GS->Player2Score;
-					UE_LOG(LogTemp, Warning, TEXT("[CLIENT LOCAL GOAL PREDICTED 0ms] Player 2 Scored! Local Score: %d - %d"), P1S, P2S);
 				}
 			}
 			CurrentVelocity = FVector::ZeroVector;
@@ -318,9 +297,6 @@ void AAirHockeyPuck::UpdatePuckPhysics(float DeltaTime)
 				if (GS)
 				{
 					GS->Player1Score += 1;
-					int32 P1S = GS->Player1Score;
-					int32 P2S = GS->Player2Score;
-					UE_LOG(LogTemp, Warning, TEXT("[CLIENT LOCAL GOAL PREDICTED 0ms] Player 1 Scored! Local Score: %d - %d"), P1S, P2S);
 				}
 			}
 			CurrentVelocity = FVector::ZeroVector;
@@ -365,6 +341,43 @@ void AAirHockeyPuck::UpdatePuckPhysics(float DeltaTime)
 	SetActorLocation(NextPos);
 }
 
+static void LogEventHitDebug(UWorld* World, const FString& HitType, const FVector& HitLocation, AActor* HittingPaddleActor = nullptr)
+{
+	if (!World) return;
+
+	float HitTimeMs = World->GetTimeSeconds() * 1000.0f;
+
+	FVector P1Pos = FVector::ZeroVector;
+	FVector P2Pos = FVector::ZeroVector;
+
+	TArray<AActor*> FoundPaddles;
+	UGameplayStatics::GetAllActorsOfClass(World, AAirHockeyPaddle::StaticClass(), FoundPaddles);
+	for (AActor* PaddleActor : FoundPaddles)
+	{
+		AAirHockeyPaddle* Paddle = Cast<AAirHockeyPaddle>(PaddleActor);
+		if (Paddle)
+		{
+			if (Paddle->GetPlayerIndex() == 1) P1Pos = Paddle->GetActorLocation();
+			else if (Paddle->GetPlayerIndex() == 2) P2Pos = Paddle->GetActorLocation();
+		}
+	}
+
+	FString HittingPaddleStr = HittingPaddleActor ? HittingPaddleActor->GetName() : TEXT("N/A (Wall)");
+	FVector HittingPaddlePos = HittingPaddleActor ? HittingPaddleActor->GetActorLocation() : FVector::ZeroVector;
+
+	UE_LOG(LogTemp, Warning, TEXT("================================================================================"));
+	UE_LOG(LogTemp, Warning, TEXT("💥 [EVENT HIT LOG] Time: %.2f ms | Role: %s"), HitTimeMs, World->IsNetMode(NM_DedicatedServer) ? TEXT("SERVER") : TEXT("CLIENT"));
+	UE_LOG(LogTemp, Warning, TEXT("▶ Hit Type          : %s"), *HitType);
+	UE_LOG(LogTemp, Warning, TEXT("▶ Puck Hit Location : X=%.2f Y=%.2f Z=%.2f"), HitLocation.X, HitLocation.Y, HitLocation.Z);
+	if (HittingPaddleActor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("▶ Hitting Paddle Pos: X=%.2f Y=%.2f Z=%.2f (%s)"), HittingPaddlePos.X, HittingPaddlePos.Y, HittingPaddlePos.Z, *HittingPaddleStr);
+	}
+	UE_LOG(LogTemp, Warning, TEXT("▶ Player 1 Paddle   : X=%.2f Y=%.2f Z=%.2f"), P1Pos.X, P1Pos.Y, P1Pos.Z);
+	UE_LOG(LogTemp, Warning, TEXT("▶ Player 2 Paddle   : X=%.2f Y=%.2f Z=%.2f"), P2Pos.X, P2Pos.Y, P2Pos.Z);
+	UE_LOG(LogTemp, Warning, TEXT("================================================================================"));
+}
+
 void AAirHockeyPuck::HandleWallBounce(const FVector& SurfaceNormal)
 {
 	FVector Normal2D = FVector(SurfaceNormal.X, SurfaceNormal.Y, 0.0f).GetSafeNormal();
@@ -373,8 +386,8 @@ void AAirHockeyPuck::HandleWallBounce(const FVector& SurfaceNormal)
 	CurrentVelocity = CurrentVelocity - 2.0f * (FVector::DotProduct(CurrentVelocity, Normal2D)) * Normal2D;
 	CurrentVelocity.Z = 0.0f;
 
-	UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY WALL BOUNCE] Normal: %s | NewVel: %s"),
-		*Normal2D.ToString(), *CurrentVelocity.ToString());
+	FString HitTypeStr = FString::Printf(TEXT("WALL BOUNCE (Normal: X=%.1f, Y=%.1f)"), Normal2D.X, Normal2D.Y);
+	LogEventHitDebug(GetWorld(), HitTypeStr, GetActorLocation(), nullptr);
 }
 
 void AAirHockeyPuck::HandlePaddleHit(AActor* PaddleActor, const FVector& PaddleVelocity)
@@ -391,44 +404,39 @@ void AAirHockeyPuck::HandlePaddleHit(AActor* PaddleActor, const FVector& PaddleV
 	}
 
 	FVector PaddleVel2D = FVector(PaddleVelocity.X, PaddleVelocity.Y, 0.0f);
+	FString HitTypeStr;
 
 	if (PaddleVel2D.SizeSquared() > 100.0f)
 	{
-		// Active Swing: Momentum transfer from mouse swing + directional impulse
 		float SwingSpeed = PaddleVel2D.Size();
 		CurrentVelocity = HitDir * (250.0f + SwingSpeed * 0.85f);
-
-		UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY PUCK HIT] Type: ACTIVE SWING | Paddle: %s | LaunchVel: %s"),
-			*PaddleActor->GetName(), *CurrentVelocity.ToString());
+		HitTypeStr = FString::Printf(TEXT("PADDLE HIT (Active Swing - Speed: %.1f)"), SwingSpeed);
 	}
 	else
 	{
-		// STEP 32.1: Stationary Block - Elastic bounce off standing paddle (85% energy retention)
 		FVector SurfaceNormal = HitDir;
 		FVector ReflectVel = CurrentVelocity - 2.0f * (FVector::DotProduct(CurrentVelocity, SurfaceNormal)) * SurfaceNormal;
 		float BounceSpeed = FMath::Max(ReflectVel.Size() * 0.85f, 200.0f);
 		CurrentVelocity = SurfaceNormal * BounceSpeed;
-
-		UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY PUCK HIT] Type: STATIONARY BLOCK | Paddle: %s | BounceVel: %s"),
-			*PaddleActor->GetName(), *CurrentVelocity.ToString());
+		HitTypeStr = TEXT("PADDLE HIT (Stationary Block Bounce)");
 	}
 
 	CurrentVelocity.Z = 0.0f;
+	LogEventHitDebug(GetWorld(), HitTypeStr, GetActorLocation(), PaddleActor);
 }
 
 void AAirHockeyPuck::HandlePaddleHitLagCompensated(AActor* PaddleActor, const FVector& PaddleVelocity, float HitAge)
 {
 	if (!HasAuthority() || !PaddleActor) return;
 
-	// STEP 30.1: Deterministic Trajectory & Launch Velocity Vector Consensus
 	CurrentVelocity = PaddleVelocity;
 	CurrentVelocity.Z = 0.0f;
 
 	ServerPuckState.Position = GetActorLocation();
 	ServerPuckState.Velocity = CurrentVelocity;
 
-	UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY SERVER PUCK LAUNCH] Paddle: %s | LaunchVel: %s"),
-		*PaddleActor->GetName(), *CurrentVelocity.ToString());
+	FString HitTypeStr = FString::Printf(TEXT("SERVER PUCK LAUNCH (HitAge: %.1f ms)"), HitAge * 1000.0f);
+	LogEventHitDebug(GetWorld(), HitTypeStr, GetActorLocation(), PaddleActor);
 }
 
 void AAirHockeyPuck::Client_ReceivePuck10msPacket_Implementation(FPuck10msPacket Packet)

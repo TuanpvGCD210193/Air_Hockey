@@ -399,6 +399,15 @@ void AAirHockeyPaddle::Client_ReceiveOpponentPaddlePosition_Implementation(int32
 
 void AAirHockeyPaddle::Server_Send10msPacket_Implementation(FPaddle10msPacket Packet)
 {
+	// STEP 35 (OPTION B): Synchronize Server's possessed Paddle Actor Location in real-time
+	// WITHOUT modifying ServerState or triggering OnRep_ServerState replication to Client 2!
+	if (HasAuthority() && Packet.RedundantSamples.Num() > 0)
+	{
+		const FPaddle10msSample& LatestSample = Packet.RedundantSamples.Last();
+		SetActorLocation(LatestSample.Position);
+		CurrentVelocity = LatestSample.Velocity;
+	}
+
 	// STEP 26.1: Attach Server's latest Puck 10ms samples to relay over possessed PlayerController channel
 	TArray<AActor*> FoundPucks;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AAirHockeyPuck::StaticClass(), FoundPucks);
@@ -561,9 +570,6 @@ void AAirHockeyPaddle::OnRep_ServerState()
 
 void AAirHockeyPaddle::Server_RequestPuckHit_Implementation(AAirHockeyPuck* Puck, FVector HitVelocity, float HitAge)
 {
-	UE_LOG(LogTemp, Warning, TEXT("[PADDLE SERVER HIT RPC RECEIVED] PlayerIndex: %d | PaddleActor: %s | HitAge: %.3f | ServerTime: %.3f | Velocity: %s"),
-		PlayerIndex, *GetName(), HitAge, GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f, *HitVelocity.ToString());
-
 	if (Puck)
 	{
 		Puck->HandlePaddleHitLagCompensated(this, HitVelocity, HitAge);

@@ -45,6 +45,4 @@ void AAirHockeyGameState::Multicast_OnGoalScored_Implementation(int32 ScoringPla
 {
 	Player1Score = NewP1Score;
 	Player2Score = NewP2Score;
-
-	UE_LOG(LogTemp, Warning, TEXT("[AIR HOCKEY MULTICAST GOAL] Player %d scored! Score: %d - %d"), ScoringPlayerId, Player1Score, Player2Score);
 }
